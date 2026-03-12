@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lambda-xtb-ingress
+  annotations:
+    kubernetes.io/tls-acme: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - "lambda-xtb.dyn.cloud.e-infra.cz"
+      secretName: lambda-xtb-dyn-cloud-e-infra-cz-tls
+  rules:
+    - host: "lambda-xtb.dyn.cloud.e-infra.cz"
+      http:
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: lambda-xtb-svc
+                port:
+                  number: 80

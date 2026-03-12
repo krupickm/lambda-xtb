@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lambda-xtb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lambda-xtb
+  template:
+    metadata:
+      labels:
+        app: lambda-xtb
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: lambda-xtb
+          image: cerit.io/krupickm/lambda-xtb:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+          securityContext:
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
