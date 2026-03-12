@@ -233,15 +233,182 @@ browser  ←→  Flask (app.py)  ←→  lambda_xtb.py  ←→  xTB/ASE
 - **Ingress domain**: `*.dyn.cloud.e-infra.cz` — auto-provisioned hostnames
 - **Auth**: MetaCentrum credentials work for JupyterHub; K8s apps can be public
 
+### CERIT-SC Kubernetes security requirements (must follow)
+
+CERIT-SC enforces the **restricted PodSecurity standard**, which means the pod must run as a non-root user.
+If the container attempts to start as root, it will fail with `CreateContainerConfigError` or `runAsNonRoot` errors.
+
+- **Docker image must switch to a non-root UID** (recommended: `USER 1000`)
+- **Deployment must include `securityContext`** (pod + container) to enforce non-root and drop capabilities
+
+Required security block (copy into Deployment manifest):
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+containers:
+  - securityContext:
+      runAsUser: 1000
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+```
+
 ### Docker image strategy
+
+We build a small, reproducible image from `environment.yml` and pinned dependencies.
 
 ```dockerfile
 FROM continuumio/miniconda3
-COPY environment.yml .
-RUN conda env create -f environment.yml
-COPY lambda_xtb.py app.py templates/ ./
+
+WORKDIR /app
+
+# Install the environment
+COPY environment.yml ./
+RUN conda env create -f environment.yml && \
+    conda clean -afy
+
+# Copy source
+COPY . .
+
+# Ensure conda env is on PATH (so python/flask just work)
+ENV PATH=/opt/conda/envs/xtb-lambda/bin:${PATH}
 ENV CONDA_DEFAULT_ENV=xtb-lambda
-CMD ["conda", "run", "-n", "xtb-lambda", "flask", "run", "--host=0.0.0.0"]
+
+# Run as non-root (required by CERIT-SC)
+RUN chown -R 1000 /opt/conda /app
+USER 1000
+
+EXPOSE 5000
+CMD ["flask", "run", "--host=0.0.0.0"]
+```
+
+### Kubernetes manifests (recommended)
+
+Create a `k8s/` directory and add these three files.
+
+**`k8s/deployment.yaml`**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lambda-xtb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lambda-xtb
+  template:
+    metadata:
+      labels:
+        app: lambda-xtb
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: lambda-xtb
+          image: cerit.io/krupickm/lambda-xtb:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+          securityContext:
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+```
+
+**`k8s/service.yaml`**
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: lambda-xtb-svc
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5000
+  selector:
+    app: lambda-xtb
+```
+
+**`k8s/ingress.yaml`**
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lambda-xtb-ingress
+  annotations:
+    kubernetes.io/tls-acme: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - "lambda-xtb.dyn.cloud.e-infra.cz"
+      secretName: lambda-xtb-dyn-cloud-e-infra-cz-tls
+  rules:
+    - host: "lambda-xtb.dyn.cloud.e-infra.cz"
+      http:
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: lambda-xtb-svc
+                port:
+                  number: 80
+```
+
+> 🔎 Use a unique hostname (e.g., `lambda-xtb-<user>.dyn.cloud.e-infra.cz`) to avoid collisions.
+
+### Build / push workflow
+
+```bash
+# Build locally
+docker build -t cerit.io/krupickm/lambda-xtb:latest .
+
+# Push to CERIT Harbor
+docker push cerit.io/krupickm/lambda-xtb:latest
+```
+
+### Deploy / update (kubectl)
+
+```bash
+kubectl apply -f k8s/ -n krupickm-ns
+kubectl get pods -n krupickm-ns
+kubectl get ingress -n krupickm-ns
+kubectl logs -l app=lambda-xtb -n krupickm-ns --follow
+
+# Redeploy after image update
+kubectl rollout restart deployment/lambda-xtb -n krupickm-ns
+```
+
+### Local testing (fast iteration)
+
+```bash
+docker build -t lambda-xtb-local .
+docker run --rm -p 5000:5000 --user 1000 lambda-xtb-local
 ```
 
 ---
@@ -258,6 +425,7 @@ lambda-xtb/
 │   └── result.html        results display + 3D viewer (py3Dmol via CDN)
 ├── environment.yml        conda env — the deployment artifact
 ├── Dockerfile             for K8s deployment
+├── k8s/                   Kubernetes manifests
 └── DEVLOG.md              this file
 ```
 

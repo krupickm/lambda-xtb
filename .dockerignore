@@ -1,0 +1,14 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.sqlite
+*.db
+lambda_results.json
+env/
+venv/
+.venv
+.ipynb_checkpoints
