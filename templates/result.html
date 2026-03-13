@@ -19,29 +19,45 @@
       a.button:hover { background: #135; }
       #viewer { position: relative; width: 100%; height: 400px; border: 1px solid #ccc; border-radius: 8px; }
       .note { font-size: 0.95rem; color: #555; }
+      .badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600; margin-left: 0.6rem; vertical-align: middle; }
+      .badge-cached { background: #e8f4e8; color: #2a6b2a; border: 1px solid #b2d8b2; }
+      .share-row { margin-top: 0.8rem; font-size: 0.9rem; color: #555; }
+      .share-row input { width: 100%; padding: 0.4rem 0.5rem; border: 1px solid #ccc; border-radius: 5px; font-size: 0.85rem; background: #f8f8f8; }
     </style>
   </head>
   <body>
     <div class="container">
       <a class="button" href="{{ url_for('index') }}">← New calculation</a>
-      <h1>Results for: <em>{{ smiles }}</em></h1>
 
-      <div class="grid">
+      <h1>
+        Results for: <em>{{ job.smiles_input }}</em>
+        {% if from_cache %}
+          <span class="badge badge-cached">cached</span>
+        {% endif %}
+      </h1>
+      <p class="note">Calculated {{ job.created_at[:10] }} &nbsp;·&nbsp; canonical: <code>{{ job.smiles_canonical }}</code></p>
+
+      <div class="share-row">
+        <label>Shareable link:</label>
+        <input type="text" readonly value="{{ request.url.split('?')[0] }}" onclick="this.select()" />
+      </div>
+
+      <div class="grid" style="margin-top:1.4rem;">
         <section class="card">
           <h2>Reorganization energies</h2>
           <table>
             <tr><th>Type</th><th>Value</th></tr>
-            <tr><td>λ⁺ (hole)</td><td>{{ results.lambda_plus_meV | round(1) }} meV ({{ results.lambda_plus_eV | round(4) }} eV)</td></tr>
-            <tr><td>λ⁻ (electron)</td><td>{{ results.lambda_minus_meV | round(1) }} meV ({{ results.lambda_minus_eV | round(4) }} eV)</td></tr>
+            <tr><td>λ⁺ (hole)</td><td>{{ (job.lambda_plus_eV * 1000) | round(1) }} meV &nbsp;({{ job.lambda_plus_eV | round(4) }} eV)</td></tr>
+            <tr><td>λ⁻ (electron)</td><td>{{ (job.lambda_minus_eV * 1000) | round(1) }} meV &nbsp;({{ job.lambda_minus_eV | round(4) }} eV)</td></tr>
           </table>
 
           <h3>Partial contributions</h3>
           <table>
             <tr><th>Component</th><th>Energy (eV)</th></tr>
-            <tr><td>λ₁⁺ (cation relaxation)</td><td>{{ results.partial.lam1_plus_eV | round(4) }}</td></tr>
-            <tr><td>λ₂⁺ (neutral relaxation)</td><td>{{ results.partial.lam2_plus_eV | round(4) }}</td></tr>
-            <tr><td>λ₁⁻ (anion relaxation)</td><td>{{ results.partial.lam1_minus_eV | round(4) }}</td></tr>
-            <tr><td>λ₂⁻ (neutral relaxation)</td><td>{{ results.partial.lam2_minus_eV | round(4) }}</td></tr>
+            <tr><td>λ₁⁺ (cation relaxation)</td><td>{{ partial.lam1_plus_eV | round(4) }}</td></tr>
+            <tr><td>λ₂⁺ (neutral relaxation)</td><td>{{ partial.lam2_plus_eV | round(4) }}</td></tr>
+            <tr><td>λ₁⁻ (anion relaxation)</td><td>{{ partial.lam1_minus_eV | round(4) }}</td></tr>
+            <tr><td>λ₂⁻ (neutral relaxation)</td><td>{{ partial.lam2_minus_eV | round(4) }}</td></tr>
           </table>
         </section>
 
@@ -53,18 +69,19 @@
 
         <section class="card">
           <h2>XYZ geometry (neutral)</h2>
-          <pre>{{ xyz_neutral }}</pre>
+          <pre>{{ job.xyz_neutral }}</pre>
         </section>
       </div>
+
       <footer style="margin-top:1.5rem; font-size:0.8rem; color:#aaa;">
         build {{ build_version }}
       </footer>
     </div>
 
     <script>
-      // Render the neutral geometry using py3Dmol
+      // Render the neutral geometry using 3Dmol
       const viewer = $3Dmol.createViewer("viewer", { backgroundColor: "#ffffff" });
-      const xyz = `{{ xyz_neutral | replace('\n', '\\n') }}`;
+      const xyz = `{{ job.xyz_neutral | replace('\n', '\\n') }}`;
       viewer.addModel(xyz, "xyz");
       viewer.setStyle({}, { stick: {}, sphere: { scale: 0.2 } });
       viewer.zoomTo();
