@@ -11,15 +11,23 @@ Usage:
 Then visit http://localhost:5000/
 """
 
-from flask import Flask, render_template, request, redirect, url_for, flash
-
+import os
 import traceback
+
+from flask import Flask, render_template, request, redirect, url_for, flash
 
 from lambda_xtb import calculate_lambda, atoms_to_xyz
 
 
 app = Flask(__name__)
 app.secret_key = "replace-me-with-a-random-secret"  # only needed for flash messages
+
+_BUILD_VERSION = os.environ.get("BUILD_VERSION", "dev")
+
+
+@app.context_processor
+def inject_version():
+    return {"build_version": _BUILD_VERSION}
 
 
 @app.route("/", methods=["GET"])

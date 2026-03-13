@@ -20,6 +20,10 @@ ENV CONDA_DEFAULT_ENV=xtb-lambda
 # Copy source
 COPY . .
 
+# Version baked in at build time (passed via --build-arg BUILD_VERSION=<number>)
+ARG BUILD_VERSION=dev
+ENV BUILD_VERSION=${BUILD_VERSION}
+
 # Flask defaults
 ENV FLASK_APP=app.py
 ENV FLASK_RUN_HOST=0.0.0.0

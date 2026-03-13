@@ -394,15 +394,26 @@ docker push cerit.io/krupickm/lambda-xtb:latest
 
 ### Deploy / update (kubectl)
 
-```bash
-kubectl apply -f k8s/ -n krupickm-ns
-kubectl get pods -n krupickm-ns
-kubectl get ingress -n krupickm-ns
-kubectl logs -l app=lambda-xtb -n krupickm-ns --follow
+From MetaCentrum login node (`perian`):
 
-# Redeploy after image update
-kubectl rollout restart deployment/lambda-xtb -n krupickm-ns
+```bash
+module add kubectl
+export KUBECONFIG=../kuba-cluster.yaml
+
+# First-time apply of all manifests
+kubectl apply -f k8s/ -n krupicka-ns
+kubectl get pods    -n krupicka-ns
+kubectl get ingress -n krupicka-ns
+kubectl logs -l app=lambda-xtb -n krupicka-ns --follow
+
+# Redeploy after image update (rolling restart)
+kubectl rollout restart deployment/lambda-xtb -n krupicka-ns
+kubectl rollout status  deployment/lambda-xtb -n krupicka-ns
 ```
+
+### CI auto-rollout
+
+The GitHub Actions workflow (`.github/workflows/docker-build.yml`) runs the rollout automatically on every push to `main` — after the image is built and pushed. This requires the `KUBECONFIG_DATA` secret to be set in the repository settings (paste the contents of `kuba-cluster.yaml`). If the secret is absent the step is skipped without failing the build.
 
 ### Local testing (fast iteration)
 
