@@ -162,9 +162,10 @@ as proper constructor arguments that actually work.
 
 ```
 Phase 1 [done]     CLI script — lambda.py, SMILES via argv
-Phase 2 [next]     Flask web service — SMILES in, JSON/HTML out
-Phase 3            Docker image → push to hub.cerit.io
-Phase 4            Kubernetes Deployment + Service + Ingress on CERIT-SC
+Phase 2 [done]     Flask web service — SMILES in, JSON/HTML out
+Phase 3 [done]     Docker image → push to cerit.io
+Phase 4 [done]     Kubernetes Deployment + Service + Ingress on CERIT-SC
+Phase 5 [planned]  SQLite caching + shareable result URLs (see below)
 ```
 
 ### Why Flask (not Jupyter/Voilà for the web service)
@@ -472,12 +473,140 @@ If your numbers violate this trend, something is wrong.
 
 ---
 
+---
+
+## Phase 5: SQLite caching + shareable result URLs
+
+### Motivation
+
+- Calculations take 30–90 s — running the same molecule twice is wasteful
+- A permanent URL like `/result/3f2a…` can be shared between colleagues
+- All results stored in SQLite are immediately useful as an ML training set
+
+### Database schema
+
+One table, `jobs`:
+
+| column | type | notes |
+|--------|------|-------|
+| `uuid` | TEXT PK | random UUID4, used in URL |
+| `smiles_input` | TEXT | exactly as typed by the user |
+| `smiles_canonical` | TEXT | RDKit canonical form — **cache key** |
+| `created_at` | TEXT | ISO 8601 UTC timestamp |
+| `status` | TEXT | `'done'` or `'error'` |
+| `lambda_plus_eV` | REAL | |
+| `lambda_minus_eV` | REAL | |
+| `lambda_plus_meV` | REAL | |
+| `lambda_minus_meV` | REAL | |
+| `partial_json` | TEXT | JSON blob of all 11 partial energies |
+| `xyz_neutral` | TEXT | XYZ string, neutral geometry |
+| `xyz_cation` | TEXT | XYZ string, cation geometry |
+| `xyz_anion` | TEXT | XYZ string, anion geometry |
+| `error_message` | TEXT | NULL if status='done' |
+
+Cache key is **canonical SMILES** (via `rdkit.Chem.MolToSmiles`) so that
+`c1ccccc1`, `C1=CC=CC=C1`, `c1ccc cc1` all map to the same result.
+
+### New request flow
+
+```
+POST /calculate
+  └─ canonicalize SMILES
+  └─ lookup canonical in DB
+       hit  → redirect 302 to /result/<existing_uuid>   (instant, no xTB)
+       miss → generate uuid4
+             → run calculate_lambda()
+             → store all results + all 3 XYZ geometries in DB
+             → redirect 302 to /result/<uuid>
+
+GET /result/<uuid>
+  └─ load row from DB
+  └─ render result.html   (same template, fed from DB row instead of live dict)
+```
+
+The POST always ends with a redirect, so browser back/refresh is safe and the
+result URL is bookmarkable immediately.
+
+### Files to add / change
+
+| file | change |
+|------|--------|
+| `db.py` (new) | `init_db()`, `find_by_canonical()`, `store_job()`, `get_job()` |
+| `app.py` | import db; modify `/calculate`; add `/result/<uuid>` route |
+| `templates/result.html` | accept `job` dict from DB; add "cached" badge |
+| `k8s/pvc.yaml` (new) | 1 Gi ReadWriteOnce PVC |
+| `k8s/deployment.yaml` | add `volumeMounts` + `volumes` pointing to PVC at `/app/data` |
+
+No new conda dependencies — `sqlite3` and `uuid` are stdlib.
+
+### SQLite file location
+
+`/app/data/lambda.db` — the `/app/data/` directory is the PVC mount point.
+
+Dockerfile: no change needed (directory created at runtime by `init_db()`).
+
+For **local dev** without a PVC, the DB lands in `./data/lambda.db` (or
+wherever `DATA_DIR` env var points). Pass `-e DATA_DIR=/tmp` to `docker run`
+if you don't want to create the `data/` dir locally.
+
+### Exporting the DB for ML use
+
+```bash
+# Copy DB out of the pod
+kubectl cp krupicka-ns/<pod-name>:/app/data/lambda.db ./lambda.db
+
+# Quick look
+sqlite3 lambda.db "SELECT smiles_canonical, lambda_plus_meV, lambda_minus_meV FROM jobs WHERE status='done';"
+
+# Export to CSV
+sqlite3 -csv -header lambda.db \
+  "SELECT uuid, smiles_canonical, lambda_plus_eV, lambda_minus_eV, partial_json FROM jobs WHERE status='done';" \
+  > lambda_results.csv
+```
+
+### PVC manifest (k8s/pvc.yaml)
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lambda-xtb-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+```
+
+Add to `k8s/deployment.yaml` under `spec.template.spec`:
+
+```yaml
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: lambda-xtb-data
+```
+
+And under `containers[0]`:
+
+```yaml
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+```
+
+---
+
 ## Open questions / next steps
 
-- [ ] Write `app.py` — synchronous Flask service
-- [ ] Add 3D geometry visualization (py3Dmol via CDN, no install needed)
+- [x] Write `app.py` — synchronous Flask service
+- [x] Add 3D geometry visualization (py3Dmol via CDN)
+- [x] Write Dockerfile
+- [x] Get CERIT-SC Harbor access and push first image
+- [x] Write K8s manifests (Deployment + Service + Ingress)
+- [x] CI: auto build + push + rollout restart on push to main
+- [x] Build version number visible in UI
+- [ ] **Phase 5**: SQLite caching + shareable `/result/<uuid>` URLs (see section above)
+- [ ] Add `k8s/pvc.yaml` and wire it into `k8s/deployment.yaml`
 - [ ] Test environment.yml reproducibility on MetaCentrum JupyterHub
-- [ ] Write Dockerfile
-- [ ] Get CERIT-SC Harbor access and push first image
-- [ ] Write minimal K8s manifest (Deployment + Service + Ingress)
 - [ ] Decide: public URL or MetaCentrum-login-required?
