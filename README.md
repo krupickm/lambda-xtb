@@ -1,6 +1,8 @@
 # λ-xTB Reorganization Energy Calculator
 
-This repository contains a small Flask web service that computes intramolecular reorganization energy (λ) using the Nelsen four-point method with **GFN2-xTB**.
+Flask web service that computes intramolecular reorganization energy (λ⁺/λ⁻) using the **Nelsen four-point method** at GFN2-xTB level. Takes a SMILES string, runs a CREST conformer search + 3 optimizations + 4 single-points, and returns λ⁺ (hole) and λ⁻ (electron) in meV. Every run is stored; the stats page shows mean ± std across repeated submissions.
+
+Live at: `https://lambda-xtb.dyn.cloud.e-infra.cz`
 
 ## Development
 
@@ -20,48 +22,61 @@ flask run --host=0.0.0.0
 
 Then open: http://localhost:5000
 
+### 3) Build and run with Docker
+
+```bash
+# Build base image once (heavy conda layer, ~3 min)
+docker build -f Dockerfile.base -t cerit.io/krupickm/lambda-xtb-base:latest .
+
+# Build app image (fast, ~20s)
+docker build -t lambda-xtb-local .
+
+docker run --rm -p 5000:5000 lambda-xtb-local
+```
+
 ## Kubernetes deployment (CERIT-SC)
 
-### Manual rollout (from MetaCentrum login node)
+### First-time setup
 
 ```bash
 module add kubectl
-export KUBECONFIG=../kuba-cluster.yaml   # path to your cluster credentials
-kubectl rollout restart deployment/lambda-xtb -n krupicka-ns
-kubectl rollout status deployment/lambda-xtb -n krupicka-ns
-```
-
-First-time apply of all manifests:
-
-```bash
+export KUBECONFIG=../kuba-cluster.yaml
 kubectl apply -f k8s/ -n krupicka-ns
 kubectl get pods    -n krupicka-ns
 kubectl get ingress -n krupicka-ns
-kubectl logs -l app=lambda-xtb -n krupicka-ns --follow
 ```
 
-## CI / Docker build + auto-deploy (GitHub Actions)
+### Useful commands
 
-This repo includes a GitHub Actions workflow that builds the Docker image, pushes it to **cerit.io**, and then triggers a rolling restart of the Kubernetes deployment automatically.
+```bash
+# Logs
+kubectl logs -l app=lambda-xtb -n krupicka-ns --follow
 
-### Required secrets (set these in your repository settings)
+# Manual rollout (if CI failed)
+kubectl rollout restart deployment/lambda-xtb -n krupicka-ns
+kubectl rollout status  deployment/lambda-xtb -n krupicka-ns
+
+# Copy SQLite DB out for inspection / export
+kubectl cp krupicka-ns/<pod-name>:/app/data/lambda.db ./lambda.db
+```
+
+## CI/CD (GitHub Actions)
+
+Two workflows in `.github/workflows/`:
+
+| Workflow | Triggers | What it does |
+|----------|----------|--------------|
+| `docker-build.yml` | every push to `main` | builds app image, pushes `:latest` + `:<sha>`, updates k8s deployment to `:<sha>` |
+| `base-image.yml` | `environment.yml` or `Dockerfile.base` change, or manual dispatch | rebuilds `lambda-xtb-base:latest` |
+
+### Required secrets
 
 | Secret | Value |
 |--------|-------|
-| `HARBOR_USERNAME` | Your Harbor login name |
-| `HARBOR_PASSWORD` | Your Harbor password |
-| `KUBECONFIG_DATA` | Full contents of `kuba-cluster.yaml` (base64 or raw YAML) |
+| `HARBOR_USERNAME` | Harbor login name |
+| `HARBOR_PASSWORD` | Harbor password |
+| `KUBECONFIG_DATA` | Full contents of `kuba-cluster.yaml` |
 
-To add the kubeconfig secret:
+## See also
 
-```bash
-# Copy the file contents and paste into the GitHub secret field
-cat ../kuba-cluster.yaml
-```
-
-The workflow will skip the rollout step gracefully if `KUBECONFIG_DATA` is not set.
-
-The image is pushed as:
-
-- `cerit.io/krupickm/lambda-xtb:latest`
-- `cerit.io/krupickm/lambda-xtb:<commit_sha>`
+`DEVLOG.md` — architecture decisions, science background, known issues, open TODOs.

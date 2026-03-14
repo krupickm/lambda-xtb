@@ -1,6 +1,6 @@
 # λ-xTB: Reorganization Energy Calculator — Project Devlog
 
-> **Status**: Web service live at `lambda-xtb.dyn.cloud.e-infra.cz` — SQLite caching, shareable URLs, CREST conformer search, CI/CD on CERIT-SC k8s.
+> **Status**: v1.1 live at `lambda-xtb.dyn.cloud.e-infra.cz` — parallel xtb execution, multi-run statistics, shareable URLs, CI/CD on CERIT-SC k8s.
 > **Location**: VS Code Remote → MetaCentrum (brno2)
 > **Repo**: `WORK/2026-tobrman-polovodic/lambda-xtb/`
 
@@ -13,7 +13,7 @@ Calculates **intramolecular reorganization energy (λ)** for organic π-conjugat
 
 Takes a SMILES string → returns λ⁺ (hole transport) and λ⁻ (electron transport) in eV/meV.
 
-**Use case**: Colleague uploads a structure, gets λ⁺ and λ₋ back without touching the CLI.
+**Use case**: Colleague uploads a structure, gets λ⁺ and λ⁻ back without touching the CLI.
 
 ---
 
@@ -47,9 +47,11 @@ For each submitted SMILES:
 
 1. **MMFF geometry** — RDKit ETKDG + MMFF force field, fast 3D embed
 2. **GFN-FF pre-opt** — easyxtb loose optimisation, prepares geometry for CREST
-3. **CREST conformer search** — `--squick --gfnff` (3 MTD runs), flexible molecules only (gates on rotatable bonds). Returns lowest-energy conformer. Currently testing `--squick` for reproducibility; `--mquick` (1 MTD run) showed inconsistent results for identical molecules across runs.
-4. **Tight GFN2-xTB optimisations** — neutral, cation, anion (serial, easyxtb ANCopt)
-5. **Four cross single-points** — GFN2-xTB (serial)
+3. **CREST conformer search** — `--squick --gfnff` (3 MTD runs), flexible molecules only (gates on rotatable bonds). Returns lowest-energy conformer.
+4. **Tight GFN2-xTB optimisations** — neutral, cation, anion run **in parallel** via `ThreadPoolExecutor(max_workers=3)`
+5. **Four cross single-points** — GFN2-xTB, all four run **in parallel** via `ThreadPoolExecutor(max_workers=4)`
+
+Thread safety: each `optimize_xtb` / `singlepoint_xtb` call gets its own `tempfile.mkdtemp()` as `calc_dir`, passed to the `easyxtb.Calculation()` constructor. Cleaned up in `finally`. No shared state between concurrent calls.
 
 ### Method: GFN2-xTB
 - Semiempirical tight-binding, ~seconds per molecule
@@ -96,7 +98,7 @@ Use `conda env create -f environment.yml` to recreate on MetaCentrum JupyterHub.
 
 **Symptom**: `xtb` launched with `-P 98`, using 400% CPU, calculation never finishes or is much slower than serial.
 
-**Cause**: easyxtb reads `os.cpu_count() // 1.3` at import time and uses that as the default `n_proc`. On a k8s node with 98 logical CPUs (even if only 4 are allocated to the pod), this passes `-P 75` or similar to every xtb call.
+**Cause**: easyxtb reads `os.cpu_count() // 1.3` at import time. On a k8s node with 98 logical CPUs (even if only 4 are allocated to the pod), this passes `-P 75` or similar to every xtb call.
 
 **Fix**: Override at module level before any calculation:
 ```python
@@ -105,21 +107,11 @@ easyxtb.configuration.config["n_proc"] = 1
 ```
 CREST passes `n_proc=4` explicitly where desired.
 
-### easyxtb: not thread-safe (parallel calls clobber each other)
-
-**Symptom**: `FileNotFoundError: /tmp/easyxtb/calcs/last/crest_0.mdrestart` when running multiple `Calculation.run()` calls concurrently.
-
-**Cause**: easyxtb maintains a shared `last/` symlink pointing to the most recent calculation directory. Concurrent calls race on this symlink and step on each other's files.
-
-**Status**: Reverted to serial execution. Issue reported upstream — awaiting maintainer input on whether a per-call isolated directory approach is acceptable.
-
-### CREST reproducibility with --mquick
+### CREST reproducibility
 
 **Symptom**: Same molecule submitted twice returns slightly different λ values.
 
-**Cause**: `--mquick` (1 MTD run) has high stochastic variance — insufficient sampling of conformer space. Even for rigid molecules, the single run can land in a different basin.
-
-**Current mitigation**: Switched to `--squick` (3 MTD runs) — better sampling, slightly slower (~30s overhead for small molecules). Under evaluation.
+**Cause**: `--mquick` (1 MTD run) had high stochastic variance. Switched to `--squick` (3 MTD runs) — better conformer sampling, ~30s overhead for small molecules. The multi-run statistics page lets users judge spread empirically.
 
 ---
 
@@ -132,8 +124,19 @@ Phase 1 [done]     CLI script — lambda_xtb.py, SMILES via argv
 Phase 2 [done]     Flask web service — SMILES in, HTML out
 Phase 3 [done]     Docker image → push to cerit.io
 Phase 4 [done]     Kubernetes Deployment + Service + Ingress on CERIT-SC
-Phase 5 [done]     SQLite caching + shareable /result/<uuid> URLs
+Phase 5 [done]     SQLite multi-run storage + shareable /result/<uuid> URLs + stats page
+Phase 6 [done]     Parallel xtb execution — ThreadPoolExecutor + isolated calc_dir per call
+Phase 7 [TODO]     Async job queue — decouple HTTP request from calculation; email result link
 ```
+
+### Synchronous execution — current limitation
+
+The Flask route blocks for the full calculation (~30–90s). This means:
+- **One calculation at a time** — concurrent requests queue behind each other
+- **No progress feedback** — browser just waits
+- **Timeout risk** — slow molecules or a busy server may hit proxy timeouts
+
+The right fix is an async job queue (Celery + Redis, or a simple thread pool with a DB-polled status endpoint). Until then, the UI warns users not to resubmit, and results are always stored by UUID so reloading is safe.
 
 ### Why Flask (not Jupyter/Voilà for the web service)
 
@@ -183,17 +186,17 @@ easyxtb temp files go to `/tmp` via `XDG_DATA_HOME=/tmp` (set in `Dockerfile.bas
 ```
 POST /calculate
   └─ canonicalize SMILES (RDKit)
-  └─ force_recalc checkbox?
-       no  → lookup canonical in DB
-                hit (DONE/SEEN) → redirect to /result/<uuid>   (instant)
-                miss or ERROR   → run calculation
-       yes → skip cache, run calculation
-  └─ run calculate_lambda()
-  └─ store_job() / store_error()  [INSERT OR REPLACE — overwrites stale errors]
-  └─ redirect to /result/<uuid>
+  └─ always run calculate_lambda() — every submission is stored
+  └─ store_job() / store_error()
+  └─ redirect to /stats/<uuid>
+
+GET /stats/<uuid>
+  └─ load all DONE/SEEN rows for same canonical SMILES
+  └─ compute mean ± std if >1 run
+  └─ render stats.html (table of all runs, current highlighted)
 
 GET /result/<uuid>
-  └─ load row from DB → render result.html
+  └─ load row from DB → render result.html (energies, 3D viewer, XYZ download)
 ```
 
 ### Database schema (`jobs` table)
@@ -202,7 +205,7 @@ GET /result/<uuid>
 |--------|------|-------|
 | `uuid` | TEXT PK | UUID4, used in URL |
 | `smiles_input` | TEXT | as typed by user |
-| `smiles_canonical` | TEXT UNIQUE | RDKit canonical — cache key |
+| `smiles_canonical` | TEXT | RDKit canonical — non-unique (multiple runs allowed) |
 | `created_at` | TEXT | ISO 8601 UTC |
 | `status` | INTEGER | -1=ERROR, 0=PENDING, 1=PROCESSING, 2=DONE, 3=SEEN |
 | `lambda_plus_eV` | REAL | |
@@ -210,9 +213,9 @@ GET /result/<uuid>
 | `partial_json` | TEXT | JSON blob of all 11 partial energies |
 | `xyz_neutral/cation/anion` | TEXT | XYZ strings |
 | `error_message` | TEXT | NULL if DONE |
-| `email` | TEXT | reserved |
+| `email` | TEXT | reserved for async notification |
 
-Cache lookup only returns DONE or SEEN rows — ERROR rows are treated as cache misses, triggering recalculation.
+Every submission creates a new row. The stats page shows all DONE/SEEN rows for the same canonical SMILES with mean ± std.
 
 ### Exporting results for ML use
 
@@ -242,7 +245,7 @@ Key env vars in the pod:
 
 | Var | Value | Why |
 |-----|-------|-----|
-| `OMP_NUM_THREADS` | `4` | Node-level default; overridden to 1 in Python for xtb |
+| `OMP_NUM_THREADS` | `4` | CREST uses this; xtb overrides to 1 per thread in Python |
 | `XDG_DATA_HOME` | `/tmp` | easyxtb writes temp files here |
 | `DATABASE_URL` | `sqlite:///data/lambda.db` | Points to PVC mount |
 
@@ -288,7 +291,8 @@ lambda-xtb/
 ├── app.py                     Flask web service
 ├── db.py                      SQLite database abstraction layer
 ├── templates/
-│   ├── index.html             SMILES input form + force-recalc checkbox
+│   ├── index.html             SMILES input form + method details
+│   ├── stats.html             all runs for a molecule: table + mean±std summary
 │   └── result.html            results display + 3D viewer (py3Dmol via CDN)
 ├── environment.yml            conda env — the deployment artifact
 ├── Dockerfile                 app image: FROM base + COPY source (~20s build)
@@ -340,8 +344,8 @@ If your numbers violate this trend, something is wrong.
 
 ## Open questions / next steps
 
+- [ ] **Async job queue** *(biggest open item)* — decouple the HTTP request from the ~30–90s calculation. Options: Celery + Redis sidecar; or a simple in-process thread pool with DB-polled `/status/<uuid>` endpoint. Goal: browser returns immediately with a "pending" page, user gets a shareable link by email when done. The `email` column in the DB is already reserved for this.
 - [ ] **CREST `--squick` validation** — compare λ results for naphthalene/anthracene/TPD across 3+ runs; confirm reproducibility vs `--mquick`
-- [ ] **Parallel xtb calls** — 3 opts + 4 SPs are independent; blocked by easyxtb `last/` symlink race. Upstream issue filed. Options: patch easyxtb, or set unique `calcs_dir` per call before submitting to `ThreadPoolExecutor`
 - [ ] **`mambaorg/micromamba` base image** — evaluate for smaller CVE surface
 - [ ] Test `environment.yml` reproducibility on MetaCentrum JupyterHub
 - [ ] Decide: public URL or MetaCentrum-login-required?
