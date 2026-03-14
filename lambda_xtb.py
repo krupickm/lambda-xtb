@@ -37,11 +37,15 @@ Usage
 """
 
 import os
+import shutil
 import sys
+import tempfile
 import numpy as np
 import pprint
 import json
+from concurrent.futures import ThreadPoolExecutor
 import easyxtb
+from easyxtb.calc import XTB as _XTB_PROGRAM
 
 # easyxtb auto-detects n_proc from os.cpu_count() // 1.3 at import time.
 # On a k8s node this can be 70-100 CPUs, causing xtb to receive -P 98 and
@@ -178,6 +182,7 @@ def optimize_xtb(atoms_in, charge: int, uhf: int,
                  level: str = "tight", label: str = "") -> tuple:
     """
     Geometry-optimize atoms_in at the given charge/uhf state using native xtb ANCopt.
+    Uses a unique calc_dir per call so multiple optimizations can run concurrently.
 
     Returns
     -------
@@ -185,20 +190,34 @@ def optimize_xtb(atoms_in, charge: int, uhf: int,
         optimized_atoms : ASE Atoms at converged geometry
         energy_hartree  : total GFN2-xTB energy in Hartree
     """
-    import easyxtb
-
+    cfg = easyxtb.configuration.config
     geom = ase_to_easyxtb(atoms_in, charge, uhf)
     tag = label or f"charge={charge:+d} uhf={uhf}"
     print(f"  Optimizing  [{tag}] ({level}) ...", end=" ", flush=True)
 
-    calc = easyxtb.Calculation.opt(geom, level=level)
-    calc.run()
+    calc_dir = tempfile.mkdtemp()
+    try:
+        calc = easyxtb.Calculation(
+            program=_XTB_PROGRAM,
+            input_geometry=geom,
+            runtype="opt",
+            runtype_args=[level],
+            options={"gfn": cfg["method"], "alpb": cfg["solvent"], "P": cfg["n_proc"]},
+            calc_dir=calc_dir,
+        )
+        calc.run()
+        converged = calc.output_geometry is not None
+        output    = calc.output
+        energy    = calc.energy
+        geom_out  = calc.output_geometry
+    finally:
+        shutil.rmtree(calc_dir, ignore_errors=True)
 
-    if "FAILED TO CONVERGE" in calc.output:
+    if not converged or "FAILED TO CONVERGE" in output:
         raise RuntimeError(f"xtb ANCopt ({level}) did not converge for [{tag}]")
 
-    print(f"converged  E = {calc.energy:.8f} Eh")
-    return easyxtb_to_ase(calc.output_geometry), calc.energy
+    print(f"converged  E = {energy:.8f} Eh")
+    return easyxtb_to_ase(geom_out), energy
 
 
 # ── single-point energy via easyxtb ──────────────────────────────────────────
@@ -206,19 +225,29 @@ def optimize_xtb(atoms_in, charge: int, uhf: int,
 def singlepoint_xtb(atoms_in, charge: int, uhf: int, label: str = "") -> float:
     """
     Single-point GFN2-xTB energy at the geometry of atoms_in.
+    Uses a unique calc_dir per call so multiple SPs can run concurrently.
     Returns energy in Hartree.
     """
-    import easyxtb
-
+    cfg = easyxtb.configuration.config
     geom = ase_to_easyxtb(atoms_in, charge, uhf)
     tag = label or f"charge={charge:+d} uhf={uhf}"
     print(f"  Single-point [{tag}] ...", end=" ", flush=True)
 
-    calc = easyxtb.Calculation.sp(geom)
-    calc.run()
+    calc_dir = tempfile.mkdtemp()
+    try:
+        calc = easyxtb.Calculation(
+            program=_XTB_PROGRAM,
+            input_geometry=geom,
+            options={"gfn": cfg["method"], "alpb": cfg["solvent"], "P": cfg["n_proc"]},
+            calc_dir=calc_dir,
+        )
+        calc.run()
+        energy = calc.energy
+    finally:
+        shutil.rmtree(calc_dir, ignore_errors=True)
 
-    print(f"{calc.energy:.8f} Eh")
-    return calc.energy
+    print(f"{energy:.8f} Eh")
+    return energy
 
 
 # ── result serialization ──────────────────────────────────────────────────────
@@ -297,18 +326,27 @@ def calculate_lambda(smiles: str) -> dict:
         print("\n[3/5] Rigid molecule — skipping CREST.")
         atoms0_best = atoms0_preopt
 
-    # ── three tight GFN2-xTB optimizations ───────────────────────────
-    print("\n[4/5] Tight GFN2-xTB optimizations ...")
-    geo0,      E0_geo0          = optimize_xtb(atoms0_best,  0,  0, "tight", "neutral")
-    geo_plus,  E_plus_geoplus   = optimize_xtb(atoms0_best, +1,  1, "tight", "cation ")
-    geo_minus, E_minus_geominus = optimize_xtb(atoms0_best, -1,  1, "tight", "anion  ")
+    # ── three tight GFN2-xTB optimizations (parallel) ────────────────
+    print("\n[4/5] Tight GFN2-xTB optimizations (parallel) ...")
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f0     = pool.submit(optimize_xtb, atoms0_best,  0,  0, "tight", "neutral")
+        fplus  = pool.submit(optimize_xtb, atoms0_best, +1,  1, "tight", "cation ")
+        fminus = pool.submit(optimize_xtb, atoms0_best, -1,  1, "tight", "anion  ")
+        geo0,      E0_geo0          = f0.result()
+        geo_plus,  E_plus_geoplus   = fplus.result()
+        geo_minus, E_minus_geominus = fminus.result()
 
-    # ── four single-points ───────────────────────────────────────────
-    print("\n[5/5] Cross single-points ...")
-    E_plus_geo0  = singlepoint_xtb(geo0,      +1, 1, "cation  @ neutral geo")
-    E_minus_geo0 = singlepoint_xtb(geo0,      -1, 1, "anion   @ neutral geo")
-    E0_geoplus   = singlepoint_xtb(geo_plus,   0, 0, "neutral @ cation  geo")
-    E0_geominus  = singlepoint_xtb(geo_minus,  0, 0, "neutral @ anion   geo")
+    # ── four single-points (parallel) ────────────────────────────────
+    print("\n[5/5] Cross single-points (parallel) ...")
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f1 = pool.submit(singlepoint_xtb, geo0,      +1, 1, "cation  @ neutral geo")
+        f2 = pool.submit(singlepoint_xtb, geo0,      -1, 1, "anion   @ neutral geo")
+        f3 = pool.submit(singlepoint_xtb, geo_plus,   0, 0, "neutral @ cation  geo")
+        f4 = pool.submit(singlepoint_xtb, geo_minus,  0, 0, "neutral @ anion   geo")
+        E_plus_geo0  = f1.result()
+        E_minus_geo0 = f2.result()
+        E0_geoplus   = f3.result()
+        E0_geominus  = f4.result()
 
     # ── four-point formula (all in Hartree) ──────────────────────────
     lam1_plus  = E_plus_geo0   - E_plus_geoplus     # λ₁⁺
