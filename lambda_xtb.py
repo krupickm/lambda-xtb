@@ -41,7 +41,6 @@ import sys
 import numpy as np
 import pprint
 import json
-from concurrent.futures import ThreadPoolExecutor
 import easyxtb
 
 # easyxtb auto-detects n_proc from os.cpu_count() // 1.3 at import time.
@@ -298,27 +297,18 @@ def calculate_lambda(smiles: str) -> dict:
         print("\n[3/5] Rigid molecule — skipping CREST.")
         atoms0_best = atoms0_preopt
 
-    # ── three tight GFN2-xTB optimizations (parallel) ────────────────
-    print("\n[4/5] Tight GFN2-xTB optimizations (parallel) ...")
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        f0     = pool.submit(optimize_xtb, atoms0_best,  0,  0, "tight", "neutral")
-        fplus  = pool.submit(optimize_xtb, atoms0_best, +1,  1, "tight", "cation ")
-        fminus = pool.submit(optimize_xtb, atoms0_best, -1,  1, "tight", "anion  ")
-        geo0,      E0_geo0          = f0.result()
-        geo_plus,  E_plus_geoplus   = fplus.result()
-        geo_minus, E_minus_geominus = fminus.result()
+    # ── three tight GFN2-xTB optimizations ───────────────────────────
+    print("\n[4/5] Tight GFN2-xTB optimizations ...")
+    geo0,      E0_geo0          = optimize_xtb(atoms0_best,  0,  0, "tight", "neutral")
+    geo_plus,  E_plus_geoplus   = optimize_xtb(atoms0_best, +1,  1, "tight", "cation ")
+    geo_minus, E_minus_geominus = optimize_xtb(atoms0_best, -1,  1, "tight", "anion  ")
 
-    # ── four single-points (parallel) ───────────────────────────────
-    print("\n[5/5] Cross single-points (parallel) ...")
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        f1 = pool.submit(singlepoint_xtb, geo0,      +1, 1, "cation  @ neutral geo")
-        f2 = pool.submit(singlepoint_xtb, geo0,      -1, 1, "anion   @ neutral geo")
-        f3 = pool.submit(singlepoint_xtb, geo_plus,   0, 0, "neutral @ cation  geo")
-        f4 = pool.submit(singlepoint_xtb, geo_minus,  0, 0, "neutral @ anion   geo")
-        E_plus_geo0  = f1.result()
-        E_minus_geo0 = f2.result()
-        E0_geoplus   = f3.result()
-        E0_geominus  = f4.result()
+    # ── four single-points ───────────────────────────────────────────
+    print("\n[5/5] Cross single-points ...")
+    E_plus_geo0  = singlepoint_xtb(geo0,      +1, 1, "cation  @ neutral geo")
+    E_minus_geo0 = singlepoint_xtb(geo0,      -1, 1, "anion   @ neutral geo")
+    E0_geoplus   = singlepoint_xtb(geo_plus,   0, 0, "neutral @ cation  geo")
+    E0_geominus  = singlepoint_xtb(geo_minus,  0, 0, "neutral @ anion   geo")
 
     # ── four-point formula (all in Hartree) ──────────────────────────
     lam1_plus  = E_plus_geo0   - E_plus_geoplus     # λ₁⁺
