@@ -291,7 +291,7 @@ def calculate_lambda(smiles: str) -> dict:
 
     # ── conformer search (flexible molecules only) ───────────────────
     if is_flexible(rdkit_mol):
-        print("\n[3/5] Flexible molecule — running CREST --mquick --gfnff ...")
+        print("\n[3/5] Flexible molecule — running CREST --squick --gfnff ...")
         atoms0_best = get_lowest_conformer(atoms0_preopt, charge=0, uhf=0)
     else:
         print("\n[3/5] Rigid molecule — skipping CREST.")
