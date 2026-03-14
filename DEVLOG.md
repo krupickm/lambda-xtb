@@ -626,7 +626,11 @@ And under `containers[0]`:
 - [x] Write K8s manifests (Deployment + Service + Ingress)
 - [x] CI: auto build + push + rollout restart on push to main
 - [x] Build version number visible in UI
+- [x] CREST conformer pre-screening for flexible molecules (`--mquick --gfnff`, gates on rotatable bonds)
+- [x] GFN-FF pre-optimisation step before GFN2-xTB production runs
+- [x] k8s: request 4 CPUs; set `OMP_NUM_THREADS=4` in pod env; CREST uses `T=4`, all xtb calls pinned to `T=1`
 - [ ] **Phase 5**: SQLite caching + shareable `/result/<uuid>` URLs (see section above)
 - [ ] Add `k8s/pvc.yaml` and wire it into `k8s/deployment.yaml`
 - [ ] Test environment.yml reproducibility on MetaCentrum JupyterHub
 - [ ] Decide: public URL or MetaCentrum-login-required?
+- [ ] **Parallelise independent xtb calls** — the 3 tight opts (neutral/cation/anion) and 4 single-points are fully independent given the same `atoms0_preopt` input; run each group concurrently with `concurrent.futures.ProcessPoolExecutor(max_workers=3)`. Prerequisite: verify easyxtb writes temp files to a unique per-`Calculation` directory (not a shared global path) to avoid worker collisions. Expected speedup: ~3× on the optimisation stage with the 4 CPUs already requested.

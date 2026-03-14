@@ -2,8 +2,7 @@
 lambda_xtb.py
 =============
 Minimal four-point intramolecular reorganization energy calculator.
-Uses GFN2-xTB via xtb-python, ASE for geometry optimization, RDKit for
-SMILES → 3D starting geometry.
+Uses GFN2-xTB via easyxtb (native ANCopt), RDKit for SMILES → 3D starting geometry.
 
 Nelsen four-point recipe
 ------------------------
@@ -28,11 +27,12 @@ All energies in Hartree internally; results reported in eV and meV.
 
 Install
 -------
-    pip install xtb-python ase rdkit numpy
+    conda install -c conda-forge xtb rdkit ase
+    pip install easyxtb
 
 Usage
 -----
-    python lambda_xtb.py                        # runs built-in pentacene demo
+    python lambda_xtb.py                        # runs built-in naphthalene demo
     python lambda_xtb.py "c1ccc2ccccc2c1"       # naphthalene from SMILES arg
 """
 
@@ -43,28 +43,30 @@ import json
 
 # ── constants ─────────────────────────────────────────────────────────────────
 BOHR_TO_ANG = 0.529177210903
-ANG_TO_BOHR = 1.0 / BOHR_TO_ANG
 EH_TO_EV    = 27.211386245988   # Hartree → eV
 
 
-# ── xTB / ASE calculator factory ─────────────────────────────────────────────
+# ── ASE ↔ easyxtb geometry converters ────────────────────────────────────────
 
-def make_xtb_calc(atoms, charge: int, uhf: int):
-    """
-    Attach a correctly charged GFN2-xTB calculator to atoms in-place.
-    Charge and uhf must be set on the Atoms object, NOT just the calculator.
-    """
-    from xtb.ase.calculator import XTB
-    import numpy as np
+def ase_to_easyxtb(atoms, charge: int, uhf: int):
+    """Convert ASE Atoms to easyxtb Geometry with charge and spin."""
+    from easyxtb import Geometry as XGeometry
+    from easyxtb.geometry import Atom as XAtom
 
-    n = len(atoms)
+    return XGeometry(
+        [XAtom(sym, *pos) for sym, pos in zip(atoms.get_chemical_symbols(), atoms.get_positions())],
+        charge=charge, spin=uhf
+    )
 
-    # distribute charge and unpaired electrons uniformly across atoms
-    # xTB reads the SUM, so distribution doesn't matter — just needs to sum correctly
-    atoms.set_initial_charges(np.full(n, charge / n))
-    atoms.set_initial_magnetic_moments(np.full(n, uhf / n))
 
-    atoms.calc = XTB(method="GFN2-xTB")
+def easyxtb_to_ase(geom):
+    """Convert easyxtb Geometry to ASE Atoms."""
+    from ase import Atoms
+
+    return Atoms(
+        symbols=[a.element for a in geom.atoms],
+        positions=[[a.x, a.y, a.z] for a in geom.atoms]
+    )
 
 
 # ── geometry generation from SMILES ──────────────────────────────────────────
@@ -72,8 +74,9 @@ def make_xtb_calc(atoms, charge: int, uhf: int):
 def smiles_to_atoms(smiles: str):
     """
     Convert a SMILES string to an ASE Atoms object with a rough 3D geometry.
-    Uses RDKit ETKDG conformer generation.
-    Returns ASE Atoms (positions in Angstrom, no periodic boundary conditions).
+    Uses RDKit ETKDG conformer generation + MMFF pre-optimisation.
+    Returns (ASE Atoms, RDKit mol-with-Hs) so callers can inspect the molecule.
+    Positions in Angstrom, no periodic boundary conditions.
     """
     from rdkit import Chem
     from rdkit.Chem import AllChem
@@ -93,16 +96,77 @@ def smiles_to_atoms(smiles: str):
     symbols = [atom.GetSymbol() for atom in mol.GetAtoms()]
     pos     = conf.GetPositions()       # Angstrom
 
-    return Atoms(symbols=symbols, positions=pos)
+    return Atoms(symbols=symbols, positions=pos), mol
 
 
-# ── single geometry optimization ──────────────────────────────────────────────
+def is_flexible(mol) -> bool:
+    """True if molecule has rotatable bonds — CREST conformer screening is worthwhile."""
+    from rdkit.Chem import rdMolDescriptors
+    return rdMolDescriptors.CalcNumRotatableBonds(mol) > 0
 
-def optimize(atoms_in, charge: int, uhf: int,
-             fmax: float = 0.05, max_steps: int = 500,
-             label: str = "") -> tuple:
+
+# ── CREST conformer pre-screening ────────────────────────────────────────────
+
+def get_lowest_conformer(atoms, charge: int, uhf: int):
     """
-    Geometry-optimize a copy of atoms_in at the given charge/uhf state.
+    Run CREST iMTD-GC (--mquick --gfnff) and return lowest-energy conformer as ASE Atoms.
+    --mquick = 1 MTD run; --gfnff = GFN-FF force field (fast, no semiempirical cost).
+    Requires crest binary in PATH.
+    """
+    import easyxtb
+
+    geom = ase_to_easyxtb(atoms, charge=charge, uhf=uhf)
+    print(f"  Running CREST --mquick --gfnff ({len(atoms)} atoms) ...", flush=True)
+
+    try:
+        conformers = easyxtb.calculate.conformers(
+            geom,
+            options={"mquick": True, "gfnff": True, "T": 4}
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"CREST conformer search failed — is 'crest' in PATH?\n"
+            f"Original error: {e}"
+        ) from e
+
+    if not conformers:
+        raise RuntimeError("CREST returned no conformers — check CREST output for errors.")
+
+    # conformers sorted by energy ascending: [{"geometry": Geometry, "energy": float}, ...]
+    print(f"  CREST found {len(conformers)} conformer(s); using lowest.")
+    return easyxtb_to_ase(conformers[0]["geometry"])
+
+
+# ── GFN-FF pre-optimisation (neutral only, before GFN2 production runs) ──────
+
+def preopt_gfnff(atoms_in, label: str = ""):
+    """
+    Quick geometry pre-optimisation using GFN-FF force field (neutral, charge=0, uhf=0).
+    Used to relax the starting geometry before the full GFN2-xTB production opts.
+    Returns optimized ASE Atoms (energy not used downstream).
+    """
+    import easyxtb
+
+    geom = ase_to_easyxtb(atoms_in, charge=0, uhf=0)
+    tag = label or "neutral (GFN-FF pre-opt)"
+    print(f"  Optimizing  [{tag}] (GFN-FF/loose) ...", end=" ", flush=True)
+
+    calc = easyxtb.Calculation.opt(geom, level="loose", options={"gfnff": True, "T": 1})
+    calc.run()
+
+    if "FAILED TO CONVERGE" in calc.output:
+        raise RuntimeError("GFN-FF pre-optimisation did not converge — check starting geometry.")
+
+    print(f"converged  E = {calc.energy:.8f} Eh")
+    return easyxtb_to_ase(calc.output_geometry)
+
+
+# ── geometry optimization via easyxtb native ANCopt ──────────────────────────
+
+def optimize_xtb(atoms_in, charge: int, uhf: int,
+                 level: str = "tight", label: str = "") -> tuple:
+    """
+    Geometry-optimize atoms_in at the given charge/uhf state using native xtb ANCopt.
 
     Returns
     -------
@@ -110,55 +174,44 @@ def optimize(atoms_in, charge: int, uhf: int,
         optimized_atoms : ASE Atoms at converged geometry
         energy_hartree  : total GFN2-xTB energy in Hartree
     """
-    from ase.optimize import LBFGS
-    import copy
+    import easyxtb
 
-    # CORRECT — copy only the geometry, attach a fresh calculator
-    atoms = atoms_in.copy()          # ASE Atoms.copy() clones positions/numbers/cell only
-    make_xtb_calc(atoms, charge, uhf)
-
+    geom = ase_to_easyxtb(atoms_in, charge, uhf)
     tag = label or f"charge={charge:+d} uhf={uhf}"
-    print(f"  Optimizing  [{tag}] ...", end=" ", flush=True)
+    print(f"  Optimizing  [{tag}] ({level}) ...", end=" ", flush=True)
 
-    opt = LBFGS(atoms, logfile="-")
-    converged = opt.run(fmax=fmax, steps=max_steps)
+    calc = easyxtb.Calculation.opt(geom, level=level, options={"T": 1})
+    calc.run()
 
-    if not converged:
-        print(f"WARNING: not converged after {max_steps} steps!")
-    else:
-        print(f"converged ({opt.get_number_of_steps()} steps)")
+    if "FAILED TO CONVERGE" in calc.output:
+        raise RuntimeError(f"xtb ANCopt ({level}) did not converge for [{tag}]")
 
-    # xTB energy is in eV from the ASE calculator interface;
-    # convert to Hartree for the four-point arithmetic to stay clean.
-    energy_ev = atoms.get_potential_energy()
-    energy_eh = energy_ev / EH_TO_EV
-
-    return atoms, energy_eh
+    print(f"converged  E = {calc.energy:.8f} Eh")
+    return easyxtb_to_ase(calc.output_geometry), calc.energy
 
 
-# ── single-point energy ───────────────────────────────────────────────────────
+# ── single-point energy via easyxtb ──────────────────────────────────────────
 
-def singlepoint(atoms_in, charge: int, uhf: int, label: str = "") -> float:
+def singlepoint_xtb(atoms_in, charge: int, uhf: int, label: str = "") -> float:
     """
     Single-point GFN2-xTB energy at the geometry of atoms_in.
     Returns energy in Hartree.
     """
-    import copy
+    import easyxtb
 
-    # CORRECT — copy only the geometry, attach a fresh calculator
-    atoms = atoms_in.copy()          # ASE Atoms.copy() clones positions/numbers/cell only
-    make_xtb_calc(atoms, charge, uhf)
-
+    geom = ase_to_easyxtb(atoms_in, charge, uhf)
     tag = label or f"charge={charge:+d} uhf={uhf}"
     print(f"  Single-point [{tag}] ...", end=" ", flush=True)
 
-    energy_ev = atoms.get_potential_energy()
-    energy_eh = energy_ev / EH_TO_EV
-    print(f"{energy_eh:.8f} Eh")
+    calc = easyxtb.Calculation.sp(geom, options={"T": 1})
+    calc.run()
 
-    return energy_eh
+    print(f"{calc.energy:.8f} Eh")
+    return calc.energy
 
-# add this function anywhere before calculate_lambda()
+
+# ── result serialization ──────────────────────────────────────────────────────
+
 def save_results(results: dict, smiles: str, path: str = "lambda_results.json"):
     """Save results dict to JSON, converting non-serializable parts."""
     output = {
@@ -190,6 +243,7 @@ def atoms_to_xyz(atoms):
     write(buf, atoms, format="xyz")
     return buf.getvalue()
 
+
 # ── main four-point calculator ────────────────────────────────────────────────
 
 def calculate_lambda(smiles: str) -> dict:
@@ -216,22 +270,34 @@ def calculate_lambda(smiles: str) -> dict:
     print(f"{'='*60}")
 
     # ── starting geometry ────────────────────────────────────────────
-    print("\n[1/3] Generating 3D starting geometry from SMILES ...")
-    atoms0_raw = smiles_to_atoms(smiles)
+    print("\n[1/4] Generating 3D starting geometry from SMILES ...")
+    atoms0_raw, rdkit_mol = smiles_to_atoms(smiles)
     print(f"      {len(atoms0_raw)} atoms")
 
-    # ── three optimizations ──────────────────────────────────────────
-    print("\n[2/3] Geometry optimizations ...")
-    geo0,    E0_geo0    = optimize(atoms0_raw, charge= 0, uhf=0, label="neutral")
-    geo_plus, E_plus_geoplus = optimize(atoms0_raw, charge=+1, uhf=1, label="cation ")
-    geo_minus,E_minus_geominus = optimize(atoms0_raw, charge=-1, uhf=1, label="anion  ")
+    # ── conformer search (flexible molecules only) ───────────────────
+    if is_flexible(rdkit_mol):
+        print("\n[2/5] Flexible molecule — running CREST --mquick --gfnff ...")
+        atoms0_best = get_lowest_conformer(atoms0_raw, charge=0, uhf=0)
+    else:
+        print("\n[2/5] Rigid molecule — skipping CREST.")
+        atoms0_best = atoms0_raw
+
+    # ── GFN-FF pre-optimisation (neutral, both paths) ────────────────
+    print("\n[3/5] GFN-FF pre-optimisation ...")
+    atoms0_preopt = preopt_gfnff(atoms0_best)
+
+    # ── three tight GFN2-xTB optimizations ───────────────────────────
+    print("\n[4/5] Tight GFN2-xTB optimizations ...")
+    geo0,      E0_geo0          = optimize_xtb(atoms0_preopt, charge= 0, uhf=0, level="tight", label="neutral")
+    geo_plus,  E_plus_geoplus   = optimize_xtb(atoms0_preopt, charge=+1, uhf=1, level="tight", label="cation ")
+    geo_minus, E_minus_geominus = optimize_xtb(atoms0_preopt, charge=-1, uhf=1, level="tight", label="anion  ")
 
     # ── four single-points ───────────────────────────────────────────
-    print("\n[3/3] Cross single-points ...")
-    E_plus_geo0    = singlepoint(geo0,     charge=+1, uhf=1, label="cation  @ neutral geo")
-    E_minus_geo0   = singlepoint(geo0,     charge=-1, uhf=1, label="anion   @ neutral geo")
-    E0_geoplus     = singlepoint(geo_plus, charge= 0, uhf=0, label="neutral @ cation  geo")
-    E0_geominus    = singlepoint(geo_minus,charge= 0, uhf=0, label="neutral @ anion   geo")
+    print("\n[5/5] Cross single-points ...")
+    E_plus_geo0  = singlepoint_xtb(geo0,     charge=+1, uhf=1, label="cation  @ neutral geo")
+    E_minus_geo0 = singlepoint_xtb(geo0,     charge=-1, uhf=1, label="anion   @ neutral geo")
+    E0_geoplus   = singlepoint_xtb(geo_plus, charge= 0, uhf=0, label="neutral @ cation  geo")
+    E0_geominus  = singlepoint_xtb(geo_minus,charge= 0, uhf=0, label="neutral @ anion   geo")
 
     # ── four-point formula (all in Hartree) ──────────────────────────
     lam1_plus  = E_plus_geo0   - E_plus_geoplus     # λ₁⁺
@@ -287,7 +353,6 @@ def calculate_lambda(smiles: str) -> dict:
             "anion":   geo_minus,
         }
     }
-
 
 
 # ── CLI entry point ───────────────────────────────────────────────────────────

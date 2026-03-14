@@ -32,12 +32,14 @@ spec:
           env:
             - name: DATABASE_URL
               value: "sqlite:///data/lambda.db"
+            - name: OMP_NUM_THREADS
+              value: "4"
           volumeMounts:
             - name: data
               mountPath: /app/data
           resources:
             requests:
-              cpu: "1"
+              cpu: "4"
               memory: "2Gi"
             limits:
               cpu: "4"

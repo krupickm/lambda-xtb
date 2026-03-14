@@ -130,7 +130,9 @@ dependencies:
   - xorg-libxext=1.3.7=hb03c661_0
   - xorg-libxrender=0.9.12=hb9d3cd8_0
   - xtb=6.7.1=h8876d29_4
-  - xtb-python=22.1=py311h9ecbd09_2
+  - crest  # Linux/Docker only — skip on Windows dev machines
   - zlib-ng=2.3.3=hceb46e0_1
+  - pip:
+    - easyxtb
   - zstd=1.5.7=hb78ec9c_6
 prefix: /storage/brno2/home/krupickm/.conda/envs/xtb-lambda

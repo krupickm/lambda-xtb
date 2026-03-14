@@ -32,3 +32,5 @@ xtbopt/
 
 # Results
 lambda_results.json
+lambda.db
+data/lambda.db
