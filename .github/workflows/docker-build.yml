@@ -49,5 +49,7 @@ jobs:
           mkdir -p ~/.kube
           echo "$KUBECONFIG_DATA" > ~/.kube/config
           chmod 600 ~/.kube/config
-          kubectl rollout restart deployment/lambda-xtb -n krupicka-ns
-          kubectl rollout status deployment/lambda-xtb -n krupicka-ns --timeout=120s
+          kubectl set image deployment/lambda-xtb \
+            lambda-xtb=cerit.io/krupickm/lambda-xtb:${{ github.sha }} \
+            -n krupicka-ns
+          kubectl rollout status deployment/lambda-xtb -n krupicka-ns --timeout=300s

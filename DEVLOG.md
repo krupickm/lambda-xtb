@@ -633,4 +633,5 @@ And under `containers[0]`:
 - [ ] Add `k8s/pvc.yaml` and wire it into `k8s/deployment.yaml`
 - [ ] Test environment.yml reproducibility on MetaCentrum JupyterHub
 - [ ] Decide: public URL or MetaCentrum-login-required?
+- [ ] **Skip-cache checkbox in UI** — add a "Force recalculate (ignore cache)" checkbox to the submission form; when checked, bypass the canonical-SMILES cache lookup and always run a fresh calculation. Useful for testing pipeline changes without polluting the DB with duplicate entries.
 - [ ] **Parallelise independent xtb calls** — the 3 tight opts (neutral/cation/anion) and 4 single-points are fully independent given the same `atoms0_preopt` input; run each group concurrently with `concurrent.futures.ProcessPoolExecutor(max_workers=3)`. Prerequisite: verify easyxtb writes temp files to a unique per-`Calculation` directory (not a shared global path) to avoid worker collisions. Expected speedup: ~3× on the optimisation stage with the 4 CPUs already requested.
