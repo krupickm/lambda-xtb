@@ -36,10 +36,19 @@ Usage
     python lambda_xtb.py "c1ccc2ccccc2c1"       # naphthalene from SMILES arg
 """
 
+import os
 import sys
 import numpy as np
 import pprint
 import json
+from concurrent.futures import ThreadPoolExecutor
+import easyxtb
+
+# easyxtb auto-detects n_proc from os.cpu_count() // 1.3 at import time.
+# On a k8s node this can be 70-100 CPUs, causing xtb to receive -P 98 and
+# hang or thrash. Override to 1 globally; CREST passes n_proc=4 explicitly.
+easyxtb.configuration.config["n_proc"] = 1
+os.environ["OMP_NUM_THREADS"] = "1"
 
 # ── constants ─────────────────────────────────────────────────────────────────
 BOHR_TO_ANG = 0.529177210903
@@ -105,6 +114,30 @@ def is_flexible(mol) -> bool:
     return rdMolDescriptors.CalcNumRotatableBonds(mol) > 0
 
 
+# ── GFN-FF pre-optimisation (neutral only, before GFN2 production runs) ──────
+
+def preopt_gfnff(atoms_in, label: str = ""):
+    """
+    Quick geometry pre-optimisation using GFN-FF force field (neutral, charge=0, uhf=0).
+    Used to relax the starting geometry before CREST and the full GFN2-xTB production opts.
+    Returns optimized ASE Atoms (energy not used downstream).
+    """
+    import easyxtb
+
+    geom = ase_to_easyxtb(atoms_in, charge=0, uhf=0)
+    tag = label or "neutral (GFN-FF pre-opt)"
+    print(f"  Optimizing  [{tag}] (GFN-FF/loose) ...", end=" ", flush=True)
+
+    calc = easyxtb.Calculation.opt(geom, level="loose", options={"gfnff": True})
+    calc.run()
+
+    if "FAILED TO CONVERGE" in calc.output:
+        raise RuntimeError("GFN-FF pre-optimisation did not converge — check starting geometry.")
+
+    print(f"converged  E = {calc.energy:.8f} Eh")
+    return easyxtb_to_ase(calc.output_geometry)
+
+
 # ── CREST conformer pre-screening ────────────────────────────────────────────
 
 def get_lowest_conformer(atoms, charge: int, uhf: int):
@@ -118,47 +151,26 @@ def get_lowest_conformer(atoms, charge: int, uhf: int):
     geom = ase_to_easyxtb(atoms, charge=charge, uhf=uhf)
     print(f"  Running CREST --mquick --gfnff ({len(atoms)} atoms) ...", flush=True)
 
+    os.environ["OMP_NUM_THREADS"] = "4"
     try:
         conformers = easyxtb.calculate.conformers(
             geom,
-            options={"mquick": True, "gfnff": True, "T": 4}
+            n_proc=4,
+            options={"mquick": True, "gfnff": True}
         )
     except Exception as e:
         raise RuntimeError(
             f"CREST conformer search failed — is 'crest' in PATH?\n"
             f"Original error: {e}"
         ) from e
+    finally:
+        os.environ["OMP_NUM_THREADS"] = "1"
 
     if not conformers:
         raise RuntimeError("CREST returned no conformers — check CREST output for errors.")
 
-    # conformers sorted by energy ascending: [{"geometry": Geometry, "energy": float}, ...]
     print(f"  CREST found {len(conformers)} conformer(s); using lowest.")
     return easyxtb_to_ase(conformers[0]["geometry"])
-
-
-# ── GFN-FF pre-optimisation (neutral only, before GFN2 production runs) ──────
-
-def preopt_gfnff(atoms_in, label: str = ""):
-    """
-    Quick geometry pre-optimisation using GFN-FF force field (neutral, charge=0, uhf=0).
-    Used to relax the starting geometry before the full GFN2-xTB production opts.
-    Returns optimized ASE Atoms (energy not used downstream).
-    """
-    import easyxtb
-
-    geom = ase_to_easyxtb(atoms_in, charge=0, uhf=0)
-    tag = label or "neutral (GFN-FF pre-opt)"
-    print(f"  Optimizing  [{tag}] (GFN-FF/loose) ...", end=" ", flush=True)
-
-    calc = easyxtb.Calculation.opt(geom, level="loose", options={"gfnff": True, "T": 1})
-    calc.run()
-
-    if "FAILED TO CONVERGE" in calc.output:
-        raise RuntimeError("GFN-FF pre-optimisation did not converge — check starting geometry.")
-
-    print(f"converged  E = {calc.energy:.8f} Eh")
-    return easyxtb_to_ase(calc.output_geometry)
 
 
 # ── geometry optimization via easyxtb native ANCopt ──────────────────────────
@@ -180,7 +192,7 @@ def optimize_xtb(atoms_in, charge: int, uhf: int,
     tag = label or f"charge={charge:+d} uhf={uhf}"
     print(f"  Optimizing  [{tag}] ({level}) ...", end=" ", flush=True)
 
-    calc = easyxtb.Calculation.opt(geom, level=level, options={"T": 1})
+    calc = easyxtb.Calculation.opt(geom, level=level)
     calc.run()
 
     if "FAILED TO CONVERGE" in calc.output:
@@ -203,7 +215,7 @@ def singlepoint_xtb(atoms_in, charge: int, uhf: int, label: str = "") -> float:
     tag = label or f"charge={charge:+d} uhf={uhf}"
     print(f"  Single-point [{tag}] ...", end=" ", flush=True)
 
-    calc = easyxtb.Calculation.sp(geom, options={"T": 1})
+    calc = easyxtb.Calculation.sp(geom)
     calc.run()
 
     print(f"{calc.energy:.8f} Eh")
@@ -270,34 +282,43 @@ def calculate_lambda(smiles: str) -> dict:
     print(f"{'='*60}")
 
     # ── starting geometry ────────────────────────────────────────────
-    print("\n[1/4] Generating 3D starting geometry from SMILES ...")
+    print("\n[1/5] Generating 3D starting geometry from SMILES ...")
     atoms0_raw, rdkit_mol = smiles_to_atoms(smiles)
     print(f"      {len(atoms0_raw)} atoms")
 
+    # ── GFN-FF pre-optimisation (both paths) ─────────────────────────
+    print("\n[2/5] GFN-FF pre-optimisation ...")
+    atoms0_preopt = preopt_gfnff(atoms0_raw)
+
     # ── conformer search (flexible molecules only) ───────────────────
     if is_flexible(rdkit_mol):
-        print("\n[2/5] Flexible molecule — running CREST --mquick --gfnff ...")
-        atoms0_best = get_lowest_conformer(atoms0_raw, charge=0, uhf=0)
+        print("\n[3/5] Flexible molecule — running CREST --mquick --gfnff ...")
+        atoms0_best = get_lowest_conformer(atoms0_preopt, charge=0, uhf=0)
     else:
-        print("\n[2/5] Rigid molecule — skipping CREST.")
-        atoms0_best = atoms0_raw
+        print("\n[3/5] Rigid molecule — skipping CREST.")
+        atoms0_best = atoms0_preopt
 
-    # ── GFN-FF pre-optimisation (neutral, both paths) ────────────────
-    print("\n[3/5] GFN-FF pre-optimisation ...")
-    atoms0_preopt = preopt_gfnff(atoms0_best)
+    # ── three tight GFN2-xTB optimizations (parallel) ────────────────
+    print("\n[4/5] Tight GFN2-xTB optimizations (parallel) ...")
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f0     = pool.submit(optimize_xtb, atoms0_best,  0,  0, "tight", "neutral")
+        fplus  = pool.submit(optimize_xtb, atoms0_best, +1,  1, "tight", "cation ")
+        fminus = pool.submit(optimize_xtb, atoms0_best, -1,  1, "tight", "anion  ")
+        geo0,      E0_geo0          = f0.result()
+        geo_plus,  E_plus_geoplus   = fplus.result()
+        geo_minus, E_minus_geominus = fminus.result()
 
-    # ── three tight GFN2-xTB optimizations ───────────────────────────
-    print("\n[4/5] Tight GFN2-xTB optimizations ...")
-    geo0,      E0_geo0          = optimize_xtb(atoms0_preopt, charge= 0, uhf=0, level="tight", label="neutral")
-    geo_plus,  E_plus_geoplus   = optimize_xtb(atoms0_preopt, charge=+1, uhf=1, level="tight", label="cation ")
-    geo_minus, E_minus_geominus = optimize_xtb(atoms0_preopt, charge=-1, uhf=1, level="tight", label="anion  ")
-
-    # ── four single-points ───────────────────────────────────────────
-    print("\n[5/5] Cross single-points ...")
-    E_plus_geo0  = singlepoint_xtb(geo0,     charge=+1, uhf=1, label="cation  @ neutral geo")
-    E_minus_geo0 = singlepoint_xtb(geo0,     charge=-1, uhf=1, label="anion   @ neutral geo")
-    E0_geoplus   = singlepoint_xtb(geo_plus, charge= 0, uhf=0, label="neutral @ cation  geo")
-    E0_geominus  = singlepoint_xtb(geo_minus,charge= 0, uhf=0, label="neutral @ anion   geo")
+    # ── four single-points (parallel) ───────────────────────────────
+    print("\n[5/5] Cross single-points (parallel) ...")
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f1 = pool.submit(singlepoint_xtb, geo0,      +1, 1, "cation  @ neutral geo")
+        f2 = pool.submit(singlepoint_xtb, geo0,      -1, 1, "anion   @ neutral geo")
+        f3 = pool.submit(singlepoint_xtb, geo_plus,   0, 0, "neutral @ cation  geo")
+        f4 = pool.submit(singlepoint_xtb, geo_minus,  0, 0, "neutral @ anion   geo")
+        E_plus_geo0  = f1.result()
+        E_minus_geo0 = f2.result()
+        E0_geoplus   = f3.result()
+        E0_geominus  = f4.result()
 
     # ── four-point formula (all in Hartree) ──────────────────────────
     lam1_plus  = E_plus_geo0   - E_plus_geoplus     # λ₁⁺
