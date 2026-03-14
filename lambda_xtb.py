@@ -141,21 +141,21 @@ def preopt_gfnff(atoms_in, label: str = ""):
 
 def get_lowest_conformer(atoms, charge: int, uhf: int):
     """
-    Run CREST iMTD-GC (--mquick --gfnff) and return lowest-energy conformer as ASE Atoms.
-    --mquick = 1 MTD run; --gfnff = GFN-FF force field (fast, no semiempirical cost).
+    Run CREST iMTD-GC (--squick --gfnff) and return lowest-energy conformer as ASE Atoms.
+    --squick = 1 MTD run; --gfnff = GFN-FF force field (fast, no semiempirical cost).
     Requires crest binary in PATH.
     """
     import easyxtb
 
     geom = ase_to_easyxtb(atoms, charge=charge, uhf=uhf)
-    print(f"  Running CREST --mquick --gfnff ({len(atoms)} atoms) ...", flush=True)
+    print(f"  Running CREST --squick --gfnff ({len(atoms)} atoms) ...", flush=True)
 
     os.environ["OMP_NUM_THREADS"] = "4"
     try:
         conformers = easyxtb.calculate.conformers(
             geom,
             n_proc=4,
-            options={"mquick": True, "gfnff": True}
+            options={"squick": True, "gfnff": True}
         )
     except Exception as e:
         raise RuntimeError(
