@@ -29,6 +29,10 @@
       <form id="calcForm" action="{{ url_for('calculate') }}" method="post">
         <label for="smiles">SMILES string</label>
         <input id="smiles" name="smiles" type="text" placeholder="c1ccc2ccccc2c1" required />
+        <label style="font-weight:normal; margin-top:0.8rem; display:flex; align-items:center; gap:0.5rem;">
+          <input type="checkbox" name="force_recalc" value="1" />
+          Force recalculate (ignore cache)
+        </label>
         <button id="submitButton" type="submit">Calculate λ</button>
       </form>
 

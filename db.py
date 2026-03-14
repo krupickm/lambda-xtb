@@ -170,7 +170,7 @@ class SQLiteDatabase(Database):
         conn = self._connect()
         try:
             conn.execute(
-                f"""INSERT INTO jobs
+                f"""INSERT OR REPLACE INTO jobs
                     (uuid, smiles_input, smiles_canonical, created_at, status,
                      lambda_plus_eV, lambda_minus_eV,
                      partial_json, xyz_neutral, xyz_cation, xyz_anion, email)
@@ -199,7 +199,7 @@ class SQLiteDatabase(Database):
         conn = self._connect()
         try:
             conn.execute(
-                f"""INSERT INTO jobs
+                f"""INSERT OR REPLACE INTO jobs
                     (uuid, smiles_input, smiles_canonical, created_at, status,
                      error_message, email)
                     VALUES ({self._q(7)})""",

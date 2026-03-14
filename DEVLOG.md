@@ -635,6 +635,6 @@ And under `containers[0]`:
 - [ ] Add `k8s/pvc.yaml` and wire it into `k8s/deployment.yaml`
 - [ ] Test environment.yml reproducibility on MetaCentrum JupyterHub
 - [ ] Decide: public URL or MetaCentrum-login-required?
-- [ ] **Skip-cache checkbox in UI** — add a "Force recalculate (ignore cache)" checkbox to the submission form; when checked, bypass the canonical-SMILES cache lookup and always run a fresh calculation. Useful for testing pipeline changes without polluting the DB with duplicate entries.
+- [x] **Skip-cache checkbox in UI** — add a "Force recalculate (ignore cache)" checkbox to the submission form; when checked, bypass the canonical-SMILES cache lookup and always run a fresh calculation. Useful for testing pipeline changes without polluting the DB with duplicate entries.
 - [x] GFN-FF preopt now runs before CREST (better starting geometry)
 - [ ] **Parallel xtb calls** — reverted to serial: easyxtb uses a shared `last/` symlink in its calcs dir; concurrent calls race on `crest_0.mdrestart` and other files under that symlink. Needs either a patched easyxtb that uses per-call unique dirs, or a wrapper that sets a unique `calcs_dir` per call before submitting to a thread pool.

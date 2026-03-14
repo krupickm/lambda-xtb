@@ -49,6 +49,7 @@ def index():
 def calculate():
     """Canonicalize SMILES, serve from cache if available, else run xTB."""
     smiles = request.form.get("smiles", "").strip()
+    force_recalc = request.form.get("force_recalc") == "1"
 
     if not smiles:
         flash("Please provide a SMILES string.")
@@ -59,10 +60,11 @@ def calculate():
         flash("Invalid SMILES — could not parse the structure.")
         return redirect(url_for("index"))
 
-    # Cache hit — skip the calculation entirely
-    cached = _database.find_by_canonical(canonical)
-    if cached:
-        return redirect(url_for("result", job_uuid=cached["uuid"], from_cache=1))
+    # Cache hit — skip the calculation entirely (unless force_recalc is set)
+    if not force_recalc:
+        cached = _database.find_by_canonical(canonical)
+        if cached:
+            return redirect(url_for("result", job_uuid=cached["uuid"], from_cache=1))
 
     # Cache miss — run the calculation
     job_uuid = str(uuid.uuid4())
