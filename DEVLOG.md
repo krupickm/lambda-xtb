@@ -597,6 +597,26 @@ And under `containers[0]`:
 
 ---
 
+## Docker image CVE status (as of 2026-03-13)
+
+`continuumio/miniconda3:latest` is based on **Debian 13 (Trixie)**. Harbor vulnerability scan reports several High CVEs, most with no fix available yet.
+
+| Packages | CVEs | Status | Action taken |
+|----------|------|--------|--------------|
+| `python3.13`, `libpython3.13-*` | CVE-2025-13836, CVE-2025-15366, CVE-2025-15367, CVE-2025-8194, CVE-2026-1299 | **Eliminated** | Purged in Dockerfile (unused — we use conda Python 3.11) |
+| `libc6`, `libc-bin` | CVE-2026-0861, CVE-2026-0915 | No upstream fix | Wait for Debian patch |
+| `libexpat1` | CVE-2026-25210 | No upstream fix | Wait for Debian patch |
+| `libtasn1-6` | CVE-2025-13151 | No upstream fix | Wait for Debian patch |
+| `libsqlite3-0` | CVE-2025-7709 | No upstream fix | Wait for Debian patch |
+
+### Medium-priority: switch base image
+
+`continuumio/miniconda3` is a heavy image (Debian full). A leaner alternative:
+
+- **`mambaorg/micromamba`** — uses a minimal base (Debian slim or Ubuntu minimal), fewer pre-installed packages, lower CVE surface. Drop-in replacement for building conda envs; requires slightly different Dockerfile syntax (`--login` shell, `micromamba run` instead of activating the env via PATH). Worth evaluating when Debian patches for the remaining CVEs are slow to arrive.
+
+---
+
 ## Open questions / next steps
 
 - [x] Write `app.py` — synchronous Flask service

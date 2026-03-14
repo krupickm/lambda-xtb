@@ -3,6 +3,20 @@
 
 FROM continuumio/miniconda3:latest
 
+# Apply available OS security patches and remove unused system Python 3.13.
+# continuumio/miniconda3:latest is based on Debian 13 (Trixie), which ships
+# Python 3.13 as its default system Python — but we use conda Python 3.11
+# exclusively. Purging these packages eliminates several High-severity CVEs
+# (CVE-2025-13836, CVE-2025-15366, CVE-2025-15367, CVE-2025-8194, CVE-2026-1299).
+# The remaining CVEs (glibc, libexpat, libtasn1) have no upstream fix yet.
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get purge -y --auto-remove \
+        python3.13 python3.13-minimal \
+        libpython3.13-minimal libpython3.13-stdlib && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 # Work inside /app
 WORKDIR /app
 
