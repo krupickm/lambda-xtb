@@ -597,13 +597,15 @@ And under `containers[0]`:
 
 ---
 
-## Docker image CVE status (as of 2026-03-13)
+## Docker image CVE status (as of 2026-03-14)
 
 `continuumio/miniconda3:latest` is based on **Debian 13 (Trixie)**. Harbor vulnerability scan reports several High CVEs, most with no fix available yet.
 
 | Packages | CVEs | Status | Action taken |
 |----------|------|--------|--------------|
 | `python3.13`, `libpython3.13-*` | CVE-2025-13836, CVE-2025-15366, CVE-2025-15367, CVE-2025-8194, CVE-2026-1299 | **Eliminated** | Purged in Dockerfile (unused — we use conda Python 3.11) |
+| `openssh-client` | CVE-2026-3497 | **Eliminated** | Purged in Dockerfile (not needed at runtime) |
+| `PyJWT` | CVE-2026-32597 | **Eliminated** | Upgraded to ≥2.12.0 via pip after conda env create |
 | `libc6`, `libc-bin` | CVE-2026-0861, CVE-2026-0915 | No upstream fix | Wait for Debian patch |
 | `libexpat1` | CVE-2026-25210 | No upstream fix | Wait for Debian patch |
 | `libtasn1-6` | CVE-2025-13151 | No upstream fix | Wait for Debian patch |

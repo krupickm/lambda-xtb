@@ -1,0 +1,34 @@
+# Base image for λ‑xTB — contains the heavy conda environment.
+# Rebuilt only when environment.yml changes (or manually via workflow_dispatch).
+# See .github/workflows/base-image.yml
+
+FROM continuumio/miniconda3:latest
+
+# Apply available OS security patches and remove unused/vulnerable packages.
+# continuumio/miniconda3:latest is Debian 13 (Trixie); system Python 3.13 is unused
+# (we use conda Python 3.11) and carries several High CVEs — purge it.
+# openssh-client carries CVE-2026-3497 and is not needed at runtime.
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get purge -y --auto-remove \
+        python3.13 python3.13-minimal \
+        libpython3.13-minimal libpython3.13-stdlib \
+        openssh-client && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install conda environment — this is the slow step (~2-3 min)
+COPY environment.yml ./
+RUN conda env create -f environment.yml && \
+    conda clean -afy && \
+    /opt/conda/envs/xtb-lambda/bin/pip install --no-cache-dir "PyJWT>=2.12.0"
+
+# Make the conda env the default Python
+ENV PATH=/opt/conda/envs/xtb-lambda/bin:${PATH}
+ENV CONDA_DEFAULT_ENV=xtb-lambda
+
+# easyxtb writes temp files under $XDG_DATA_HOME/easyxtb;
+# /tmp is a writable tmpfs in k8s and always exists at container start
+ENV XDG_DATA_HOME=/tmp
