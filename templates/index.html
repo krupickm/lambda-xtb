@@ -29,10 +29,6 @@
       <form id="calcForm" action="{{ url_for('calculate') }}" method="post">
         <label for="smiles">SMILES string</label>
         <input id="smiles" name="smiles" type="text" placeholder="c1ccc2ccccc2c1" required />
-        <label style="font-weight:normal; margin-top:0.8rem; display:flex; align-items:center; gap:0.5rem;">
-          <input type="checkbox" name="force_recalc" value="1" />
-          Force recalculate (ignore cache)
-        </label>
         <button id="submitButton" type="submit">Calculate λ</button>
       </form>
 
@@ -41,8 +37,23 @@
         <p style="margin:0.5rem 0 0;">This can take 30–90 seconds depending on the molecule size. Please do not refresh or submit again.</p>
       </div>
 
+      <details style="margin-top:1.2rem; font-size:0.9rem; color:#444;">
+        <summary style="cursor:pointer; font-weight:600;">Method details</summary>
+        <ol style="margin:0.6rem 0 0 1.2rem; line-height:1.7;">
+          <li>SMILES → 3D geometry via RDKit ETKDG + MMFF</li>
+          <li>GFN-FF loose pre-optimisation (fast force field)</li>
+          <li>CREST <code>--squick --gfnff</code> conformational search (3 MTD runs) for flexible molecules — returns the lowest-energy conformer</li>
+          <li>Tight GFN2-xTB geometry optimisation of neutral, cation, and anion</li>
+          <li>Four cross single-point energies at GFN2-xTB level</li>
+          <li>Nelsen four-point formula → λ⁺ (hole) and λ⁻ (electron)</li>
+        </ol>
+        <p style="margin:0.7rem 0 0; padding:0.5rem 0.7rem; background:#fff8e1; border-left:3px solid #e6a817; border-radius:4px;">
+          <strong>Warning:</strong> The conformational search is a crude approximation of the global minimum.
+          Results may differ between runs for flexible molecules. For publication-quality values, use proper CREST sampling and DFT (B3LYP/def2-SVP).
+        </p>
+      </details>
+
       <footer>
-        <p>Enter a SMILES string and wait (10–60s) for xTB to run. For best results, keep molecule size moderate.</p>
         <p style="color:#aaa; font-size:0.8rem;">build {{ build_version }}</p>
       </footer>
 
@@ -55,6 +66,7 @@
           submitButton.disabled = true;
           submitButton.textContent = 'Calculating…';
           status.style.display = 'block';
+          document.title = '⏳ Calculating…';
         });
       </script>
     </section>

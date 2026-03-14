@@ -38,12 +38,8 @@ class Database(ABC):
         """Create tables and indexes if they don't exist."""
 
     @abstractmethod
-    def find_by_canonical(self, smiles_canonical: str) -> dict | None:
-        """Return a DONE or SEEN job row by canonical SMILES, or None.
-
-        PENDING and PROCESSING rows are intentionally excluded so a
-        concurrent in-flight calculation does not block a new submission.
-        """
+    def find_all_by_canonical(self, smiles_canonical: str) -> list[dict]:
+        """Return all DONE or SEEN job rows for this canonical SMILES, newest first."""
 
     @abstractmethod
     def store_job(
@@ -100,7 +96,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 """
 
 _DDL_INDEX = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical ON jobs (smiles_canonical)
+CREATE INDEX IF NOT EXISTS idx_canonical ON jobs (smiles_canonical)
 """
 
 
@@ -137,23 +133,27 @@ class SQLiteDatabase(Database):
         conn = self._connect()
         try:
             conn.execute(_DDL_TABLE)
+            # Migration: replace unique index with non-unique (allows multiple
+            # runs per molecule for reproducibility statistics)
+            conn.execute("DROP INDEX IF EXISTS idx_canonical")
             conn.execute(_DDL_INDEX)
             conn.commit()
         finally:
             conn.close()
 
-    def find_by_canonical(self, smiles_canonical: str) -> dict | None:
+    def find_all_by_canonical(self, smiles_canonical: str) -> list[dict]:
         conn = self._connect()
         try:
             conn.row_factory = sqlite3.Row
-            row = conn.execute(
+            rows = conn.execute(
                 f"SELECT * FROM jobs WHERE smiles_canonical = {self.PLACEHOLDER}"
-                f" AND status IN ({self._q(2)})",
+                f" AND status IN ({self._q(2)})"
+                f" ORDER BY created_at DESC",
                 (smiles_canonical, int(JobStatus.DONE), int(JobStatus.SEEN)),
-            ).fetchone()
+            ).fetchall()
         finally:
             conn.close()
-        return dict(row) if row else None
+        return [dict(r) for r in rows]
 
     def store_job(
         self,
@@ -170,7 +170,7 @@ class SQLiteDatabase(Database):
         conn = self._connect()
         try:
             conn.execute(
-                f"""INSERT OR REPLACE INTO jobs
+                f"""INSERT INTO jobs
                     (uuid, smiles_input, smiles_canonical, created_at, status,
                      lambda_plus_eV, lambda_minus_eV,
                      partial_json, xyz_neutral, xyz_cation, xyz_anion, email)
@@ -199,7 +199,7 @@ class SQLiteDatabase(Database):
         conn = self._connect()
         try:
             conn.execute(
-                f"""INSERT OR REPLACE INTO jobs
+                f"""INSERT INTO jobs
                     (uuid, smiles_input, smiles_canonical, created_at, status,
                      error_message, email)
                     VALUES ({self._q(7)})""",

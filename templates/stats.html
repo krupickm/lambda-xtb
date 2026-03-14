@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>✓ λ‑xTB — all runs</title>
+    <style>
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 1.2rem; }
+      .container { max-width: 860px; margin: auto; }
+      h1 { margin-top: 0; }
+      .card { padding: 1.2rem; border: 1px solid #ddd; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 1.4rem; }
+      table { width: 100%; border-collapse: collapse; }
+      td, th { padding: 0.55rem 0.5rem; border-bottom: 1px solid #eee; }
+      th { text-align: left; font-weight: 600; background: #f5f5f5; }
+      tr.current { background: #f0f7ff; }
+      a.button { display: inline-block; padding: 0.6rem 1rem; border-radius: 8px; background: #246; color: #fff; text-decoration: none; margin-bottom: 1rem; }
+      a.button:hover { background: #135; }
+      a.link { color: #246; }
+      .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+      .summary-box { padding: 0.8rem 1rem; border: 1px solid #ddd; border-radius: 8px; text-align: center; }
+      .summary-box .val { font-size: 1.5rem; font-weight: 700; }
+      .summary-box .label { font-size: 0.85rem; color: #555; }
+      .note { font-size: 0.85rem; color: #777; margin-top: 0.4rem; }
+      footer { margin-top: 1.5rem; font-size: 0.8rem; color: #aaa; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <a class="button" href="{{ url_for('index') }}">← New calculation</a>
+
+      <h1>All runs</h1>
+      <p style="word-break:break-all;"><strong>Molecule:</strong> <code>{{ canonical }}</code></p>
+
+      {% if summary %}
+      <section class="card">
+        <h2>Summary ({{ summary.n }} runs)</h2>
+        <div class="summary">
+          <div class="summary-box">
+            <div class="val">{{ summary.lp_mean | round(1) }} meV</div>
+            <div class="label">λ⁺ (hole) mean</div>
+            <div class="note">± {{ summary.lp_stdev | round(1) }} meV std</div>
+          </div>
+          <div class="summary-box">
+            <div class="val">{{ summary.lm_mean | round(1) }} meV</div>
+            <div class="label">λ⁻ (electron) mean</div>
+            <div class="note">± {{ summary.lm_stdev | round(1) }} meV std</div>
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      <section class="card">
+        <h2>Individual runs</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Date (UTC)</th>
+              <th>λ⁺ (meV)</th>
+              <th>λ⁻ (meV)</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for job in jobs %}
+            <tr{% if job.uuid == current_uuid %} class="current"{% endif %}>
+              <td>{{ loop.revindex }}</td>
+              <td>{{ job.created_at[:16].replace('T', ' ') }}</td>
+              <td>{{ (job.lambda_plus_eV * 1000) | round(1) }}</td>
+              <td>{{ (job.lambda_minus_eV * 1000) | round(1) }}</td>
+              <td><a class="link" href="{{ url_for('result', job_uuid=job.uuid) }}">view{% if job.uuid == current_uuid %} ← this run{% endif %}</a></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+
+      <details style="font-size:0.85rem; color:#555;">
+        <summary style="cursor:pointer; font-weight:600;">Method details</summary>
+        <p style="margin:0.5rem 0 0;">
+          RDKit ETKDG/MMFF → GFN-FF pre-opt → CREST <code>--squick --gfnff</code> conformational search (3 MTD runs, flexible molecules only) →
+          tight GFN2-xTB geometry optimisation of neutral, cation &amp; anion →
+          four cross single-points at GFN2-xTB →
+          Nelsen four-point formula.
+        </p>
+        <p style="margin:0.6rem 0 0; padding:0.5rem 0.7rem; background:#fff8e1; border-left:3px solid #e6a817; border-radius:4px;">
+          <strong>Warning:</strong> The conformational search is a crude approximation of the global minimum.
+          Results may differ between runs for flexible molecules. For publication-quality values,
+          use proper CREST sampling and DFT (B3LYP/def2-SVP).
+        </p>
+      </details>
+
+      <footer>build {{ build_version }}</footer>
+    </div>
+  </body>
+</html>

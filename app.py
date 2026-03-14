@@ -9,6 +9,7 @@ Then visit http://localhost:5000/
 
 import json
 import os
+import statistics
 import traceback
 import uuid
 
@@ -47,9 +48,8 @@ def index():
 
 @app.route("/calculate", methods=["POST"])
 def calculate():
-    """Canonicalize SMILES, serve from cache if available, else run xTB."""
+    """Run a new xTB calculation and redirect to the statistics page."""
     smiles = request.form.get("smiles", "").strip()
-    force_recalc = request.form.get("force_recalc") == "1"
 
     if not smiles:
         flash("Please provide a SMILES string.")
@@ -60,13 +60,6 @@ def calculate():
         flash("Invalid SMILES — could not parse the structure.")
         return redirect(url_for("index"))
 
-    # Cache hit — skip the calculation entirely (unless force_recalc is set)
-    if not force_recalc:
-        cached = _database.find_by_canonical(canonical)
-        if cached:
-            return redirect(url_for("result", job_uuid=cached["uuid"], from_cache=1))
-
-    # Cache miss — run the calculation
     job_uuid = str(uuid.uuid4())
     try:
         results = calculate_lambda(smiles)
@@ -82,7 +75,38 @@ def calculate():
         flash(f"Calculation failed: {exc}")
         return redirect(url_for("index"))
 
-    return redirect(url_for("result", job_uuid=job_uuid))
+    return redirect(url_for("stats", job_uuid=job_uuid))
+
+
+@app.route("/stats/<job_uuid>")
+def stats(job_uuid):
+    """Show all runs for the same canonical SMILES, with summary statistics."""
+    job = _database.get_job(job_uuid)
+    if job is None:
+        flash("Result not found.")
+        return redirect(url_for("index"))
+
+    all_jobs = _database.find_all_by_canonical(job["smiles_canonical"])
+
+    summary = None
+    if len(all_jobs) > 1:
+        lp = [j["lambda_plus_eV"]  * 1000 for j in all_jobs]
+        lm = [j["lambda_minus_eV"] * 1000 for j in all_jobs]
+        summary = {
+            "n":               len(all_jobs),
+            "lp_mean":         statistics.mean(lp),
+            "lp_stdev":        statistics.stdev(lp),
+            "lm_mean":         statistics.mean(lm),
+            "lm_stdev":        statistics.stdev(lm),
+        }
+
+    return render_template(
+        "stats.html",
+        canonical=job["smiles_canonical"],
+        current_uuid=job_uuid,
+        jobs=all_jobs,
+        summary=summary,
+    )
 
 
 @app.route("/result/<job_uuid>")

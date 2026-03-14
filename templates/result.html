@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>λ‑xTB results</title>
+    <title>✓ λ‑xTB results</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.0.3/3Dmol-min.js" integrity="sha512-jweq4GWaP9GAOgoHcrtXdPu3ngMPVdQ5JqEPmNEI1P7v8LMFkvN++JBtDecLL7nbpU5iU73gzrNvKbGNT2Unhw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <style>
       body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 1.2rem; }
@@ -72,6 +72,21 @@
           <pre>{{ job.xyz_neutral }}</pre>
         </section>
       </div>
+
+      <details style="margin-top:1.4rem; font-size:0.85rem; color:#555;">
+        <summary style="cursor:pointer; font-weight:600;">Method details</summary>
+        <p style="margin:0.5rem 0 0;">
+          RDKit ETKDG/MMFF → GFN-FF pre-opt → CREST <code>--squick --gfnff</code> conformational search (3 MTD runs, flexible molecules only) →
+          tight GFN2-xTB geometry optimisation of neutral, cation &amp; anion →
+          four cross single-points at GFN2-xTB →
+          Nelsen four-point formula.
+        </p>
+        <p style="margin:0.6rem 0 0; padding:0.5rem 0.7rem; background:#fff8e1; border-left:3px solid #e6a817; border-radius:4px;">
+          <strong>Warning:</strong> The conformational search is a crude approximation of the global minimum.
+          Results may differ between runs for flexible molecules. Treat as screening-level values only;
+          for publication quality use proper CREST sampling and DFT (B3LYP/def2-SVP) electronic energies.
+        </p>
+      </details>
 
       <footer style="margin-top:1.5rem; font-size:0.8rem; color:#aaa;">
         build {{ build_version }}
