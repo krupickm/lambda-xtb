@@ -38,6 +38,10 @@ COPY . .
 ARG BUILD_VERSION=dev
 ENV BUILD_VERSION=${BUILD_VERSION}
 
+# Set HOME so easyxtb can write its data dir (~/.local/share/easyxtb)
+# without this, containers running as non-root get HOME=/ which is not writable
+ENV HOME=/app
+
 # Flask defaults
 ENV FLASK_APP=app.py
 ENV FLASK_RUN_HOST=0.0.0.0
