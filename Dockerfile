@@ -34,17 +34,24 @@ ENV CONDA_DEFAULT_ENV=xtb-lambda
 # Copy source
 COPY . .
 
+# Pre-create easyxtb config (as root, world-readable) so the non-root app user
+# can find it. calcs_dir points to /tmp which is the only writable tmpfs in k8s.
+RUN mkdir -p /app/.local/share/easyxtb && \
+    echo '{"calcs_dir": "/tmp"}' > /app/.local/share/easyxtb/config.json
+
 # Version baked in at build time (passed via --build-arg BUILD_VERSION=<number>)
 ARG BUILD_VERSION=dev
 ENV BUILD_VERSION=${BUILD_VERSION}
 
-# Set HOME so easyxtb can write its data dir (~/.local/share/easyxtb)
-# without this, containers running as non-root get HOME=/ which is not writable
+# HOME must point to where we wrote the easyxtb config above
 ENV HOME=/app
 
 # Flask defaults
 ENV FLASK_APP=app.py
 ENV FLASK_RUN_HOST=0.0.0.0
+
+# Run as non-root (matches k8s securityContext runAsUser: 1000)
+USER 1000
 
 # Expose port used by flask
 EXPOSE 5000
