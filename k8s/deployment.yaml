@@ -34,8 +34,8 @@ spec:
               value: "sqlite:///data/lambda.db"
             - name: OMP_NUM_THREADS
               value: "4"
-            - name: HOME
-              value: "/app"
+            - name: XDG_DATA_HOME
+              value: "/tmp"
           volumeMounts:
             - name: data
               mountPath: /app/data
