@@ -44,6 +44,14 @@ relevant parts; do not invent alternative endpoints, JSON keys, or states.
 
 ---
 
+## 3a. Dev data is disposable
+
+`data/lambda.db` (and anything else under `data/`) is a **local dev/scratch database with
+no real data** — running the app, importing `app.py`, or running tests may write to it.
+That is expected and fine; it is not a scope violation and does not need to be reverted or
+called out in your handoff. (Real data only ever lives on the cluster PVC, which you never
+touch — see §4.)
+
 ## 4. Guardrails — do NOT
 
 - ❌ Deploy, `kubectl apply`/`set image`, or touch the `krupicka-ns` cluster.

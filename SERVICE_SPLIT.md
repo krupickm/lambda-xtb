@@ -448,6 +448,32 @@ COMPUTE_IMAGE=cerit.io/krupickm/lambda-xtb:${sha} -n krupicka-ns`; keep the roll
 
 ---
 
+### WP10 — Cleanup chores (living list)
+**Files:** whatever each item names (see below)
+**Depends on:** the WP that introduced the item (noted per item)
+**Goal:** Catch tech debt that earlier WPs deliberately deferred to stay in scope, so it
+doesn't get lost. This is **not a one-shot WP** — it's a running checklist. Every
+implementer agent, on finishing its own WP, **must check this list for an item unblocked by
+its work and, if found and small, do it as part of a *separate* commit on its own branch**
+(never silently folded into the WP's main commit). If an agent's WP creates *new*,
+deliberately-deferred debt, it should **add a line here** (edit this file only — do not
+touch other WPs' sections) rather than expanding its own scope.
+
+**Format per item:** `- [ ] <what> — introduced by WP<N>, unblocked by WP<M>. <why deferred>`
+
+**Chores:**
+- [ ] Remove `store_job`/`store_error` from `db.py` (`Database` ABC + `SQLiteDatabase`) once
+  `app.py` no longer calls them — introduced by WP1 (kept them as the old INSERT-based
+  methods so the pre-existing synchronous `/calculate` flow kept working), unblocked by
+  WP5 (rewrites `/calculate` to use `create_pending_job`/`update_result`/`update_error`
+  instead). Also drop the now-redundant `store_job`/`store_error` acceptance tests in
+  `tests/test_db.py` if any were added for them.
+
+**Out of scope:** anything that isn't a small, mechanical follow-up to an already-merged
+WP — file a proper new WP/issue instead of growing this list unboundedly.
+
+---
+
 ## Out of scope / follow-ups
 - True scale-to-zero (Knative/KEDA HTTP add-on) — needs CERIT-SC admin; revisit if idle
   frontend cost matters.
