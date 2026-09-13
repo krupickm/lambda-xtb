@@ -189,7 +189,7 @@ def get_lowest_conformer(atoms, charge: int, uhf: int):
     import easyxtb
 
     geom = ase_to_easyxtb(atoms, charge=charge, uhf=uhf)
-    print(f"  Running CREST --squick --gfnff ({len(atoms)} atoms) ...", flush=True)
+    print(f"  Running CREST --squick --gfnff ({len(atoms)} atoms, n_proc={XTB_NPROC}) ...", flush=True)
 
     try:
         conformers = easyxtb.calculate.conformers(
@@ -227,7 +227,11 @@ def optimize_xtb(atoms_in, charge: int, uhf: int,
     cfg = easyxtb.configuration.config
     geom = ase_to_easyxtb(atoms_in, charge, uhf)
     tag = label or f"charge={charge:+d} uhf={uhf}"
-    print(f"  Optimizing  [{tag}] ({level}) ...", end=" ", flush=True)
+    # Single, self-contained line per event (no split start/finish print):
+    # optimize_xtb runs concurrently (ThreadPoolExecutor) in calculate_lambda,
+    # so interleaved output from other calls must not split a line or drop
+    # the tag from the completion message.
+    print(f"  Optimizing  [{tag}] ({level}) ...", flush=True)
 
     calc_dir = tempfile.mkdtemp()
     try:
@@ -250,7 +254,7 @@ def optimize_xtb(atoms_in, charge: int, uhf: int,
     if not converged or "FAILED TO CONVERGE" in output:
         raise RuntimeError(f"xtb ANCopt ({level}) did not converge for [{tag}]")
 
-    print(f"converged  E = {energy:.8f} Eh")
+    print(f"  Optimizing  [{tag}] ({level}) ... converged  E = {energy:.8f} Eh")
     return easyxtb_to_ase(geom_out), energy
 
 
@@ -265,7 +269,9 @@ def singlepoint_xtb(atoms_in, charge: int, uhf: int, label: str = "") -> float:
     cfg = easyxtb.configuration.config
     geom = ase_to_easyxtb(atoms_in, charge, uhf)
     tag = label or f"charge={charge:+d} uhf={uhf}"
-    print(f"  Single-point [{tag}] ...", end=" ", flush=True)
+    # Single, self-contained line per event — see the comment in optimize_xtb;
+    # singlepoint_xtb also runs concurrently in calculate_lambda's SP phase.
+    print(f"  Single-point [{tag}] ...", flush=True)
 
     calc_dir = tempfile.mkdtemp()
     try:
@@ -280,7 +286,7 @@ def singlepoint_xtb(atoms_in, charge: int, uhf: int, label: str = "") -> float:
     finally:
         shutil.rmtree(calc_dir, ignore_errors=True)
 
-    print(f"{energy:.8f} Eh")
+    print(f"  Single-point [{tag}] ... {energy:.8f} Eh")
     return energy
 
 
@@ -342,6 +348,9 @@ def calculate_lambda(smiles: str) -> dict:
     print(f"\n{'='*60}")
     print(f"  Molecule : {smiles}")
     print(f"{'='*60}")
+    print(f"  Parallelism: XTB_NPROC={XTB_NPROC} (CREST fan-out only; "
+          f"each xtb opt/SP call pinned to 1 CPU; "
+          f"opt_workers={OPT_WORKERS}, sp_workers={SP_WORKERS})")
 
     # ── starting geometry ────────────────────────────────────────────
     print("\n[1/5] Generating 3D starting geometry from SMILES ...")
