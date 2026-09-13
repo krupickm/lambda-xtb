@@ -462,12 +462,13 @@ touch other WPs' sections) rather than expanding its own scope.
 **Format per item:** `- [ ] <what> — introduced by WP<N>, unblocked by WP<M>. <why deferred>`
 
 **Chores:**
-- [ ] Remove `store_job`/`store_error` from `db.py` (`Database` ABC + `SQLiteDatabase`) once
+- [x] Remove `store_job`/`store_error` from `db.py` (`Database` ABC + `SQLiteDatabase`) once
   `app.py` no longer calls them — introduced by WP1 (kept them as the old INSERT-based
   methods so the pre-existing synchronous `/calculate` flow kept working), unblocked by
   WP5 (rewrites `/calculate` to use `create_pending_job`/`update_result`/`update_error`
   instead). Also drop the now-redundant `store_job`/`store_error` acceptance tests in
-  `tests/test_db.py` if any were added for them.
+  `tests/test_db.py` if any were added for them. Done in a separate commit on
+  `wp5-frontend-flow`; `tests/test_db.py` had no tests for them to drop.
 
 **Out of scope:** anything that isn't a small, mechanical follow-up to an already-merged
 WP — file a proper new WP/issue instead of growing this list unboundedly.

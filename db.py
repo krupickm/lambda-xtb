@@ -42,31 +42,6 @@ class Database(ABC):
         """Return all DONE or SEEN job rows for this canonical SMILES, newest first."""
 
     @abstractmethod
-    def store_job(
-        self,
-        job_uuid: str,
-        smiles_input: str,
-        smiles_canonical: str,
-        results: dict,
-        xyz_neutral: str,
-        xyz_cation: str,
-        xyz_anion: str,
-        email: str | None = None,
-    ) -> None:
-        """Persist a completed job (status=DONE)."""
-
-    @abstractmethod
-    def store_error(
-        self,
-        job_uuid: str,
-        smiles_input: str,
-        smiles_canonical: str,
-        error_message: str,
-        email: str | None = None,
-    ) -> None:
-        """Persist a failed job (status=ERROR)."""
-
-    @abstractmethod
     def get_job(self, job_uuid: str) -> dict | None:
         """Return a job row by UUID, or None if not found."""
 
@@ -189,63 +164,6 @@ class SQLiteDatabase(Database):
         finally:
             conn.close()
         return [dict(r) for r in rows]
-
-    def store_job(
-        self,
-        job_uuid: str,
-        smiles_input: str,
-        smiles_canonical: str,
-        results: dict,
-        xyz_neutral: str,
-        xyz_cation: str,
-        xyz_anion: str,
-        email: str | None = None,
-    ) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        conn = self._connect()
-        try:
-            conn.execute(
-                f"""INSERT INTO jobs
-                    (uuid, smiles_input, smiles_canonical, created_at, status,
-                     lambda_plus_eV, lambda_minus_eV,
-                     partial_json, xyz_neutral, xyz_cation, xyz_anion, email)
-                    VALUES ({self._q(12)})""",
-                (
-                    job_uuid, smiles_input, smiles_canonical, now, int(JobStatus.DONE),
-                    results["lambda_plus_eV"], results["lambda_minus_eV"],
-                    json.dumps(results["partial"]),
-                    xyz_neutral, xyz_cation, xyz_anion,
-                    email,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-    def store_error(
-        self,
-        job_uuid: str,
-        smiles_input: str,
-        smiles_canonical: str,
-        error_message: str,
-        email: str | None = None,
-    ) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        conn = self._connect()
-        try:
-            conn.execute(
-                f"""INSERT INTO jobs
-                    (uuid, smiles_input, smiles_canonical, created_at, status,
-                     error_message, email)
-                    VALUES ({self._q(7)})""",
-                (
-                    job_uuid, smiles_input, smiles_canonical, now, int(JobStatus.ERROR),
-                    error_message, email,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
 
     def get_job(self, job_uuid: str) -> dict | None:
         conn = self._connect()
