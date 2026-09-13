@@ -11,7 +11,6 @@ import hmac
 import json
 import os
 import statistics
-import traceback
 import uuid
 
 from flask import Flask, jsonify, render_template, request, redirect, url_for, flash
@@ -20,7 +19,6 @@ from rdkit import Chem
 import db as _db
 import jobs as _jobs
 from db import JobStatus
-from lambda_xtb import calculate_lambda, atoms_to_xyz
 
 
 app = Flask(__name__)
@@ -46,6 +44,17 @@ def _reconcile_job(job_uuid: str) -> None:
     in the endpoint) so tests can monkeypatch `app._reconcile_job`.
     """
     _jobs.reconcile(job_uuid, database=_database)
+
+
+def _create_compute_job(job_uuid: str, smiles: str) -> None:
+    """Spawn the k8s compute Job for a freshly-created PENDING job.
+
+    Delegates to `jobs.create_compute_job` (WP6), which submits a 14-CPU
+    Job via the in-cluster kubernetes client. Kept as a module-level
+    function (rather than called inline from the route) so tests can
+    monkeypatch `app._create_compute_job` instead of hitting a real cluster.
+    """
+    _jobs.create_compute_job(job_uuid, smiles)
 
 
 @app.context_processor
@@ -172,14 +181,31 @@ def api_job_status(job_uuid):
 
 @app.route("/", methods=["GET"])
 def index():
-    """Render the SMILES input form."""
+    """Render the SMILES input form.
+
+    A `?error=...` query param (set by the polling page's client-side JS
+    when a job ends in ERROR — see `templates/pending.html`) is surfaced as
+    a normal flash message, so error reporting goes through the same
+    `get_flashed_messages()` path as every other error on this page.
+    """
+    error = request.args.get("error")
+    if error:
+        flash(error)
     return render_template("index.html")
 
 
 @app.route("/calculate", methods=["POST"])
 def calculate():
-    """Run a new xTB calculation and redirect to the statistics page."""
+    """Validate the submission, queue a compute Job, and redirect to /pending.
+
+    The actual xTB calculation no longer runs inside the request: a PENDING
+    row is created (WP1's `create_pending_job`) and a 14-CPU compute Job is
+    spawned for it (`_create_compute_job`, injected so tests can mock it —
+    see SERVICE_SPLIT.md "Frontend job-spawning"). The worker reports back
+    to the internal API (WP4) as it progresses.
+    """
     smiles = request.form.get("smiles", "").strip()
+    email = request.form.get("email", "").strip() or None
 
     if not smiles:
         flash("Please provide a SMILES string.")
@@ -191,21 +217,26 @@ def calculate():
         return redirect(url_for("index"))
 
     job_uuid = str(uuid.uuid4())
-    try:
-        results = calculate_lambda(smiles)
-        _database.store_job(
-            job_uuid, smiles, canonical, results,
-            xyz_neutral=atoms_to_xyz(results["geometries"]["neutral"]),
-            xyz_cation=atoms_to_xyz(results["geometries"]["cation"]),
-            xyz_anion=atoms_to_xyz(results["geometries"]["anion"]),
-        )
-    except Exception as exc:
-        traceback.print_exc()
-        _database.store_error(job_uuid, smiles, canonical, str(exc))
-        flash(f"Calculation failed: {exc}")
+    _database.create_pending_job(job_uuid, smiles, canonical, email=email)
+    _create_compute_job(job_uuid, smiles)
+
+    return redirect(url_for("pending", job_uuid=job_uuid))
+
+
+@app.route("/pending/<job_uuid>")
+def pending(job_uuid):
+    """Render the polling page for a queued/running calculation.
+
+    The page itself polls `GET /api/jobs/<uuid>/status` client-side and
+    redirects to `/stats/<uuid>` on DONE, or to `/` with a flash message
+    on ERROR — see `templates/pending.html`.
+    """
+    status_row = _database.get_status(job_uuid)
+    if status_row is None:
+        flash("Result not found.")
         return redirect(url_for("index"))
 
-    return redirect(url_for("stats", job_uuid=job_uuid))
+    return render_template("pending.html", job_uuid=job_uuid)
 
 
 @app.route("/stats/<job_uuid>")
