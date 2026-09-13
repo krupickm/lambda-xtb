@@ -49,10 +49,17 @@ from easyxtb.calc import XTB as _XTB_PROGRAM
 
 def _xtb_nproc_from_env() -> int:
     """
-    Total xtb/CREST thread budget for this process, read from the XTB_NPROC
-    env var (default 1, matching today's local/dev behaviour). A dedicated
-    14-CPU compute Job sets this higher so a single xtb/CREST call can use
-    more threads.
+    CREST conformer-search parallelism budget for this process, read from
+    the XTB_NPROC env var (default 1, matching today's local/dev behaviour).
+    A dedicated 14-CPU compute Job sets this higher.
+
+    CREST is the only stage here that benefits from more CPUs: it runs many
+    independent, single-threaded conformer searches concurrently. A single
+    xtb ANCopt/single-point call does NOT benefit from OpenMP/-P threading on
+    molecules this small — synchronization overhead outweighs the gain — so
+    every individual xtb worker (opt, SP, and each CREST conformer) always
+    runs on 1 CPU regardless of this budget; see the module-level config
+    below and `get_lowest_conformer`.
     """
     raw = os.environ.get("XTB_NPROC", "1")
     try:
@@ -62,34 +69,26 @@ def _xtb_nproc_from_env() -> int:
     return n if n > 0 else 1
 
 
-#: Total xtb/CREST thread budget for this process (see `_xtb_nproc_from_env`).
+#: CREST conformer-search parallelism budget (see `_xtb_nproc_from_env`).
 XTB_NPROC = _xtb_nproc_from_env()
 
 #: Number of concurrent tasks in calculate_lambda()'s opt / single-point
-#: phases. Fixed per SERVICE_SPLIT.md (the task graph itself doesn't change);
-#: XTB_NPROC is split across whichever of these is active via
-#: `_per_call_nproc` so total thread usage fits the configured budget.
+#: phases. Pool-level (process) parallelism across independent, single-CPU
+#: xtb workers is fine and unaffected by XTB_NPROC; kept fixed per
+#: SERVICE_SPLIT.md.
 OPT_WORKERS = 3
 SP_WORKERS = 4
 
-
-def _per_call_nproc(total_nproc: int, workers: int) -> int:
-    """
-    Split a total XTB_NPROC thread budget across `workers` concurrent xtb
-    calls (one ThreadPoolExecutor phase), rounding down but never below 1
-    thread per call. At the default budget of 1 this always resolves to 1
-    regardless of `workers`, preserving today's single-threaded-per-call
-    behaviour for local/dev runs.
-    """
-    return max(1, total_nproc // workers)
-
-
 # easyxtb auto-detects n_proc from os.cpu_count() // 1.3 at import time.
 # On a k8s node this can be 70-100 CPUs, causing xtb to receive -P 98 and
-# hang or thrash. Pin it to the explicit XTB_NPROC budget instead (default
-# 1, matching local/dev runs).
-easyxtb.configuration.config["n_proc"] = XTB_NPROC
-os.environ["OMP_NUM_THREADS"] = str(XTB_NPROC)
+# hang or thrash — and even at modest values, OpenMP threading inside a
+# single xtb call on molecules this small tends to lose time to
+# synchronization overhead rather than gain from it. Pin every individual
+# xtb call to 1 CPU always; only CREST's own internal parallelism (how many
+# single-threaded conformer searches it runs concurrently) scales with
+# XTB_NPROC.
+easyxtb.configuration.config["n_proc"] = 1
+os.environ["OMP_NUM_THREADS"] = "1"
 
 # ── constants ─────────────────────────────────────────────────────────────────
 BOHR_TO_ANG = 0.529177210903
@@ -363,7 +362,6 @@ def calculate_lambda(smiles: str) -> dict:
 
     # ── three tight GFN2-xTB optimizations (parallel) ────────────────
     print("\n[4/5] Tight GFN2-xTB optimizations (parallel) ...")
-    easyxtb.configuration.config["n_proc"] = _per_call_nproc(XTB_NPROC, OPT_WORKERS)
     with ThreadPoolExecutor(max_workers=OPT_WORKERS) as pool:
         f0     = pool.submit(optimize_xtb, atoms0_best,  0,  0, "tight", "neutral")
         fplus  = pool.submit(optimize_xtb, atoms0_best, +1,  1, "tight", "cation ")
@@ -374,7 +372,6 @@ def calculate_lambda(smiles: str) -> dict:
 
     # ── four single-points (parallel) ────────────────────────────────
     print("\n[5/5] Cross single-points (parallel) ...")
-    easyxtb.configuration.config["n_proc"] = _per_call_nproc(XTB_NPROC, SP_WORKERS)
     with ThreadPoolExecutor(max_workers=SP_WORKERS) as pool:
         f1 = pool.submit(singlepoint_xtb, geo0,      +1, 1, "cation  @ neutral geo")
         f2 = pool.submit(singlepoint_xtb, geo0,      -1, 1, "anion   @ neutral geo")
