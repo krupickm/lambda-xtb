@@ -18,6 +18,7 @@ from flask import Flask, jsonify, render_template, request, redirect, url_for, f
 from rdkit import Chem
 
 import db as _db
+import jobs as _jobs
 from db import JobStatus
 from lambda_xtb import calculate_lambda, atoms_to_xyz
 
@@ -34,19 +35,17 @@ _database.init_db()
 _TERMINAL_STATUSES = {int(JobStatus.DONE), int(JobStatus.ERROR), int(JobStatus.SEEN)}
 
 
-def _noop_reconcile(job_uuid: str) -> None:
-    """Placeholder dead-worker reconciliation hook.
+def _reconcile_job(job_uuid: str) -> None:
+    """Dead-worker reconciliation hook.
 
     Called by `GET /api/jobs/<uuid>/status` for non-terminal jobs so a
     silently-dead worker (OOMKilled, evicted, ...) can be detected and the
-    row marked ERROR — see SERVICE_SPLIT.md, "Silent-death detection". This
-    WP stubs it as a no-op; WP6 supplies the real k8s-backed implementation.
-    Kept as a module-level reference so tests can monkeypatch `app._reconcile_job`.
+    row marked ERROR — see SERVICE_SPLIT.md, "Silent-death detection".
+    Delegates to `jobs.reconcile` (WP6), which consults the k8s Job status
+    and the row's age. Kept as a module-level function (rather than inlined
+    in the endpoint) so tests can monkeypatch `app._reconcile_job`.
     """
-    return None
-
-
-_reconcile_job = _noop_reconcile
+    _jobs.reconcile(job_uuid, database=_database)
 
 
 @app.context_processor

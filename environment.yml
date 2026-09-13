@@ -134,5 +134,6 @@ dependencies:
   - zlib-ng=2.3.3=hceb46e0_1
   - pip:
     - easyxtb
+    - kubernetes
   - zstd=1.5.7=hb78ec9c_6
 prefix: /storage/brno2/home/krupickm/.conda/envs/xtb-lambda
