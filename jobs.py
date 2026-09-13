@@ -12,11 +12,14 @@ Two state machines, kept separate here too:
   - k8s Job/Pod state — infra-level, consulted only to infer a dead worker.
 """
 
+import logging
 import os
 from datetime import datetime, timezone
 
 import db as _db
 from db import JobStatus
+
+_log = logging.getLogger(__name__)
 
 # ── manifest defaults ───────────────────────────────────────────────────────
 
@@ -138,7 +141,27 @@ def create_compute_job(job_uuid: str, smiles: str) -> None:
 
     Reads `COMPUTE_IMAGE`, `NAMESPACE`, `CALLBACK_BASE_URL`, `CALLBACK_TOKEN`,
     and `XTB_NPROC` (default `"14"`) from the environment.
+
+    Outside a cluster (no in-cluster ServiceAccount config, e.g. local
+    `flask run` or a standalone `docker run`) this is a no-op dev
+    short-circuit per SERVICE_SPLIT.md "Verification": the PENDING row is
+    left as-is and no real Job is created, so a developer can drive the
+    worker by hand instead (`python compute_runner.py` with a matching
+    `JOB_UUID`). A misconfigured *in-cluster* deployment (missing
+    `COMPUTE_IMAGE` etc.) still raises, since that's a real production bug.
     """
+    from kubernetes.config.config_exception import ConfigException
+
+    try:
+        batch_v1 = _batch_v1_client()
+    except ConfigException:
+        _log.info(
+            "create_compute_job(%s): no in-cluster k8s config, skipping real "
+            "Job creation (dev short-circuit)",
+            job_uuid,
+        )
+        return
+
     image = os.environ["COMPUTE_IMAGE"]
     namespace = os.environ.get("NAMESPACE", "default")
     env = {
@@ -148,7 +171,7 @@ def create_compute_job(job_uuid: str, smiles: str) -> None:
     }
 
     manifest = build_job_spec(job_uuid, smiles, image, env)
-    _batch_v1_client().create_namespaced_job(namespace=namespace, body=manifest)
+    batch_v1.create_namespaced_job(namespace=namespace, body=manifest)
 
 
 # ── silent-death reconciliation ─────────────────────────────────────────────

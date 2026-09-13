@@ -113,6 +113,16 @@ def test_create_compute_job_submits_via_batch_v1(monkeypatch):
     assert kwargs["body"]["metadata"]["name"] == jobs.job_name(job_uuid)
 
 
+def test_create_compute_job_no_in_cluster_config_short_circuits():
+    """Mirrors SERVICE_SPLIT.md "Verification": outside a cluster (no
+    ServiceAccount mounted, e.g. local `flask run`/`docker run`), this must
+    not crash even with none of COMPUTE_IMAGE/CALLBACK_* set — it's a no-op
+    so a developer can drive the worker by hand instead."""
+    job_uuid = str(uuid.uuid4())
+
+    jobs.create_compute_job(job_uuid, "c1ccccc1")  # must not raise
+
+
 # ── reconcile ─────────────────────────────────────────────────────────────
 
 @pytest.fixture
