@@ -55,4 +55,7 @@ jobs:
           kubectl set image deployment/lambda-xtb \
             lambda-xtb=cerit.io/krupickm/lambda-xtb:${{ github.sha }} \
             -n krupicka-ns
+          kubectl set env deployment/lambda-xtb \
+            COMPUTE_IMAGE=cerit.io/krupickm/lambda-xtb:${{ github.sha }} \
+            -n krupicka-ns
           kubectl rollout status deployment/lambda-xtb -n krupicka-ns --timeout=300s
