@@ -26,6 +26,10 @@ Required environment variables
 Exit code: 0 on success (POSTed /result), 1 on any failure (POSTed /error,
 or failed before that point). A non-zero exit with no /error POST is caught
 by the frontend's dead-worker reconciliation (SERVICE_SPLIT.md).
+
+Run as a script, stdout/stderr are wrapped so every line carries a wall-clock
+time and an elapsed counter (`_TimestampedStream`) — the compute pod's log is
+the only record of how long each stage of a calculation took.
 """
 
 import json
@@ -42,6 +46,52 @@ from lambda_xtb import atoms_to_xyz, calculate_lambda
 RETRY_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 2
 _TRANSIENT_HTTP_STATUSES = {502, 503, 504}
+
+
+class _TimestampedStream:
+    """Line-prefixing stdout/stderr wrapper: `[HH:MM:SS +MM.Ms] <line>`.
+
+    calculate_lambda() reports progress with a mix of whole lines and partial
+    ones (`print(..., end=" ")` completed by a later `print`), so the prefix is
+    written only where a line actually begins — a continuation stays on the
+    line it belongs to, and blank separator lines stay blank.
+
+    Only Python-level writes are stamped. Anything a child process (xtb, CREST)
+    writes straight to the inherited file descriptor bypasses this.
+    """
+
+    def __init__(self, stream, started_at: float | None = None) -> None:
+        self._stream = stream
+        self._started_at = time.monotonic() if started_at is None else started_at
+        self._at_line_start = True
+
+    def _prefix(self) -> str:
+        elapsed = time.monotonic() - self._started_at
+        return f"[{time.strftime('%H:%M:%S')} +{elapsed:7.1f}s] "
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+        out = []
+        for part in text.splitlines(keepends=True):
+            if self._at_line_start and part != "\n":
+                out.append(self._prefix())
+            out.append(part)
+            self._at_line_start = part.endswith("\n")
+        self._stream.write("".join(out))
+        return len(text)
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def isatty(self) -> bool:
+        return False
+
+    def __getattr__(self, name):
+        stream = self.__dict__.get("_stream")
+        if stream is None:
+            raise AttributeError(name)
+        return getattr(stream, name)
 
 
 def _post(url: str, token: str, payload: dict) -> None:
@@ -116,4 +166,9 @@ def run() -> int:
 
 
 if __name__ == "__main__":
+    # Installed here, not in run(), so importing this module (tests) never
+    # replaces the interpreter's streams.
+    _started_at = time.monotonic()
+    sys.stdout = _TimestampedStream(sys.stdout, _started_at)
+    sys.stderr = _TimestampedStream(sys.stderr, _started_at)
     sys.exit(run())

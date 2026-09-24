@@ -78,6 +78,29 @@ compute container sets `PYTHONUNBUFFERED=1` so these arrive as they happen rathe
 one burst at exit — a frontend older than commit `ef9124d` will not set it, and the log
 will look like it is doing nothing until the pod finishes.
 
+Every line carries a wall clock and an elapsed counter, which is how you tell where the
+time actually went:
+
+```
+[13:49:01 +   12.4s] [2/5] GFN-FF pre-optimisation ...
+[13:49:01 +   12.4s]   Optimizing  [neutral] (GFN-FF/loose) ... converged  E = -12.34567890 Eh
+[13:49:14 +   25.7s] [3/5] Flexible molecule — running CREST --squick --gfnff ...
+```
+
+The stamp marks where a *line* began. `lambda_xtb` writes some steps as
+`Optimizing ... ` followed later by `converged E = ...` on the same line, so such a line
+is stamped with the moment the step **started**; the following line's counter tells you
+when it ended. Only Python-level output is stamped — anything xtb or CREST writes straight
+to the inherited file descriptor is not.
+
+`kubectl` can also stamp lines itself, with the time the container runtime received them.
+That needs no rebuild and works on older images, so it is the fallback when you are
+looking at a pod that predates this:
+
+```bash
+kubectl logs --timestamps job/lambda-xtb-compute-$JOB -n $NS
+```
+
 If the pod never becomes Ready, the reason is in its events (usually quota or scheduling):
 
 ```bash

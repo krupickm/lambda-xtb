@@ -186,6 +186,68 @@ def test_retries_after_transient_503_then_succeeds(monkeypatch):
     ]
 
 
+# ── timestamped log output ──────────────────────────────────────────────────
+
+def _stamped(text, stream=None):
+    """Feed `text` through a _TimestampedStream and return what was written."""
+    import io
+
+    buf = stream if stream is not None else io.StringIO()
+    out = compute_runner._TimestampedStream(buf, started_at=0.0)
+    out.write(text)
+    return buf.getvalue()
+
+
+_STAMP = r"^\[\d{2}:\d{2}:\d{2} \+\s*\d+\.\d+s\] "
+
+
+def test_timestamp_prefixes_each_line():
+    import re
+
+    written = _stamped("[1/5] starting\n[2/5] next\n")
+    lines = written.splitlines()
+
+    assert len(lines) == 2
+    for line, tail in zip(lines, ("[1/5] starting", "[2/5] next")):
+        assert re.match(_STAMP, line), line
+        assert line.endswith(tail)
+
+
+def test_timestamp_not_repeated_mid_line():
+    """calculate_lambda writes `Optimizing ... ` then completes the line later;
+    the continuation must not get a second prefix."""
+    import io
+    import re
+
+    buf = io.StringIO()
+    out = compute_runner._TimestampedStream(buf, started_at=0.0)
+    out.write("  Optimizing [neutral] ... ")   # print(..., end=" ")
+    out.write("converged  E = -1.5 Eh\n")     # completing print
+
+    written = buf.getvalue()
+    assert len(written.splitlines()) == 1
+    assert len(re.findall(_STAMP, written, flags=re.M)) == 1
+    assert written.endswith("Optimizing [neutral] ... converged  E = -1.5 Eh\n")
+
+
+def test_timestamp_leaves_blank_lines_blank():
+    written = _stamped("\n[3/5] after a separator\n")
+    first, second = written.splitlines()
+
+    assert first == ""
+    assert second.endswith("[3/5] after a separator")
+
+
+def test_timestamp_stream_passes_through_flush_and_attrs():
+    import io
+
+    buf = io.StringIO()
+    out = compute_runner._TimestampedStream(buf, started_at=0.0)
+    out.flush()                      # must not raise
+    assert out.isatty() is False
+    assert out.writable() is True    # delegated to the wrapped stream
+
+
 def test_missing_env_var_returns_exit_one(monkeypatch):
     monkeypatch.delenv("JOB_UUID", raising=False)
     monkeypatch.delenv("SMILES", raising=False)
