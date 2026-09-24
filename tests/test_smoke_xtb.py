@@ -13,6 +13,8 @@ Marked `smoke` so it can be selected or skipped explicitly; it needs the real
 conda env (xtb, rdkit, ase, easyxtb) and is the only test here that does.
 """
 
+import shutil
+
 import pytest
 
 from lambda_xtb import atoms_to_xyz, calculate_lambda
@@ -34,6 +36,17 @@ TOLERANCE = 0.25  # ±25 %
 @pytest.fixture(scope="module")
 def result():
     """Run the real four-point calculation once for the whole module."""
+    # easyxtb shells out to whatever `xtb` is on PATH and, when there is none,
+    # fails deep inside subprocess with `FileNotFoundError: ... 'None'`, which
+    # says nothing useful. Using the env's interpreter is not enough — the env
+    # has to be *activated*. Failing (not skipping) is deliberate: in CI a
+    # missing xtb is exactly the broken environment this test exists to catch.
+    if shutil.which("xtb") is None:
+        pytest.fail(
+            "xtb is not on PATH, so nothing was calculated. Locally: "
+            "`conda activate xtb-lambda`. In CI: the base image is broken, or "
+            "the step that puts /opt/conda/envs/xtb-lambda/bin on PATH did not run."
+        )
     return calculate_lambda(ETHYLENE)
 
 
