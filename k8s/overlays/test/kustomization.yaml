@@ -30,12 +30,13 @@ labels:
   - pairs:
       app: lambda-xtb-test
     includeSelectors: true
-  # Plain marker label (not a selector, so it stays mutable) applied to every
-  # object and to the pod template, so `kubectl get all,pods -l instance=test`
-  # covers the whole instance — matching the label on its compute Jobs.
+  # Plain marker label (not a selector, so it stays mutable) on every object, so
+  # `kubectl get all -l instance=test` covers the whole instance. The pod
+  # template gets the same label from deployment-patch.yaml rather than via
+  # `includeTemplates: true`, which needs kustomize v5.3+ — newer than the one
+  # embedded in CERIT-SC's kubectl.
   - pairs:
       instance: test
-    includeTemplates: true
 
 resources:
   - ../../base

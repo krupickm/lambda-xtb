@@ -12,6 +12,12 @@ spec:
   strategy:
     type: Recreate
   template:
+    metadata:
+      # Marker label on the pod itself — on older kustomize the `labels`
+      # transformer reaches object metadata only — so `kubectl get pods
+      # -l instance=test` lists the frontend alongside its compute Job pods.
+      labels:
+        instance: test
     spec:
       containers:
         - name: lambda-xtb
