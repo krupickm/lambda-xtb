@@ -306,6 +306,10 @@ The Secret carries no value in git (base declares the name only, so re-applying 
 overlay can never overwrite a live token), and the overlay must exist before the workflow
 runs, since the rollout step does `kubectl set image` on an existing Deployment.
 
+Watching a calculation travel through the stack — and the login-node thread hazard that
+comes with `kubectl logs -f` — is covered in
+[docs/OBSERVING_A_RUN.md](docs/OBSERVING_A_RUN.md).
+
 **Drift warning:** CI pins the Deployment to `:<sha>` with `kubectl set image` / `set env`.
 Re-applying an overlay afterwards resets the image back to the manifest's `:latest` —
 re-run the workflow for that instance after any apply.

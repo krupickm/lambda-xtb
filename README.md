@@ -46,6 +46,9 @@ kubectl get pods    -n krupicka-ns
 kubectl get ingress -n krupicka-ns
 ```
 
+To watch a calculation run end to end (frontend → compute Job → callbacks), see
+[docs/OBSERVING_A_RUN.md](docs/OBSERVING_A_RUN.md).
+
 ### Useful commands
 
 ```bash
