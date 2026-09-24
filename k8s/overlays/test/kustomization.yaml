@@ -19,6 +19,24 @@ kind: Kustomization
 namespace: krupicka-ns
 nameSuffix: -test
 
+# `nameSuffix` renames objects but NOT label values, and Service selectors match
+# on labels, not names. Left alone, the test Service's selector `app: lambda-xtb`
+# would also match prod's frontend pod — and prod's Service would match the test
+# pod — so each instance would serve a share of the other's traffic against the
+# wrong SQLite. Re-labelling test's pods (selectors included) is what actually
+# keeps the two apart; prod needs no change, because `app: lambda-xtb` then
+# matches prod's pods only.
+labels:
+  - pairs:
+      app: lambda-xtb-test
+    includeSelectors: true
+  # Plain marker label (not a selector, so it stays mutable) applied to every
+  # object and to the pod template, so `kubectl get all,pods -l instance=test`
+  # covers the whole instance — matching the label on its compute Jobs.
+  - pairs:
+      instance: test
+    includeTemplates: true
+
 resources:
   - ../../base
 

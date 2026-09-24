@@ -249,6 +249,7 @@ the instance being demoed.
 | PVC (its own SQLite) | `lambda-xtb-data` | `lambda-xtb-data-test` |
 | Callback token Secret | `lambda-xtb-callback` | `lambda-xtb-callback-test` |
 | Compute Job size | 14 CPU / 4–16Gi | 14 CPU / 4–16Gi — same as prod |
+| Pod label / selector | `app=lambda-xtb` | `app=lambda-xtb-test`, `instance=test` |
 | Spawned Jobs labelled | `instance=prod` | `instance=test` |
 | Rollout strategy | RollingUpdate (legacy) | `Recreate` |
 | Gets `:latest` | yes | no — `:<sha>` only |
@@ -258,10 +259,18 @@ run there reproduces prod's timings and thread behaviour instead of a scaled-dow
 approximation. The cost is that two concurrent calculations, one per instance, need 28 CPU of
 namespace quota — set `JOB_CPU`/`JOB_MEMORY_*` on the test overlay if that ever gets tight.
 
-They cannot interfere: compute Jobs mount only an `emptyDir` scratch and never a PVC
+They cannot interfere. Compute Jobs mount only an `emptyDir` scratch and never a PVC
 (results travel back by HTTP callback), Job names carry a uuid4, and `reconcile()` reads
-Jobs **by exact name**, never by label selector — the `instance` label is for humans and
-quota accounting only.
+Jobs **by exact name**, never by label selector — the `instance` label on Jobs is for humans
+and quota accounting only.
+
+The frontends need one more thing, though, because **`nameSuffix` renames objects but not
+label values, and Service selectors match on labels**: left alone, `lambda-xtb-svc-test`
+would select `app=lambda-xtb` and so pick up prod's pod, while prod's Service picked up the
+test pod — each instance serving a share of the other's traffic against the wrong SQLite.
+The test overlay therefore re-labels its pods `app=lambda-xtb-test`, selectors included.
+Prod needs no change for this: once test's pods no longer carry `app=lambda-xtb`, prod's
+existing selector matches prod's pods only.
 
 ### Manifests — `k8s/`
 
