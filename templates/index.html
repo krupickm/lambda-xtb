@@ -29,12 +29,16 @@
       <form id="calcForm" action="{{ url_for('calculate') }}" method="post">
         <label for="smiles">SMILES string</label>
         <input id="smiles" name="smiles" type="text" placeholder="c1ccc2ccccc2c1" required />
+
+        <label for="email" style="margin-top: 0.9rem;">Email (optional)</label>
+        <input id="email" name="email" type="email" placeholder="you@example.com" />
+
         <button id="submitButton" type="submit">Calculate λ</button>
       </form>
 
       <div id="status" style="display:none; margin-top: 1rem; padding: 0.8rem; border: 1px solid #ccc; border-radius: 8px; background: #f8f8f8;">
-        <strong>Calculation running…</strong>
-        <p style="margin:0.5rem 0 0;">This can take 30–90 seconds depending on the molecule size. Please do not refresh or submit again.</p>
+        <strong>Queuing your calculation…</strong>
+        <p style="margin:0.5rem 0 0;">You'll be redirected to a status page. A calculation typically takes 1–2 minutes; leave your email to be notified when it's done.</p>
       </div>
 
       <details style="margin-top:1.2rem; font-size:0.9rem; color:#444;">

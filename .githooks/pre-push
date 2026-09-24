@@ -1,0 +1,36 @@
+#!/bin/sh
+# Refuse to push straight to main.
+#
+# GitHub cannot enforce this for us: lambda-xtb is a private repo on a Free
+# plan, where branch protection and rulesets are unavailable ("Upgrade to
+# GitHub Pro or make this repository public"). Until that changes, this hook
+# is the whole enforcement story — it is client-side and therefore advisory,
+# but it turns "push to main" from a reflex into a deliberate act.
+#
+# Enable once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# Deliberate override, when you really mean it:
+#
+#     git push --no-verify
+#
+# Tags are unaffected: pushing `v1.2` is how a release happens.
+
+protected_branch="main"
+status=0
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+    case "$remote_ref" in
+        "refs/heads/$protected_branch")
+            echo "pre-push: refusing to push directly to '$protected_branch'." >&2
+            echo "          Open a pull request so CI runs before the merge:" >&2
+            echo "              git push -u origin \$(git branch --show-current)" >&2
+            echo "              gh pr create --fill" >&2
+            echo "          Override deliberately with: git push --no-verify" >&2
+            status=1
+            ;;
+    esac
+done
+
+exit "$status"

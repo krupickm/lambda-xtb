@@ -1,0 +1,58 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Test instance — a second, fully independent copy of the whole stack in the
+# same namespace as prod, running the SAME IMAGE. Everything that differs
+# between the two instances is here; no source file knows which instance it
+# is running in.
+#
+# `nameSuffix` renames every resource (lambda-xtb -> lambda-xtb-test,
+# lambda-xtb-svc -> lambda-xtb-svc-test, ...) and kustomize rewrites the
+# cross-references along with them: the Deployment's PVC `claimName` and
+# `secretKeyRef.name`, the Ingress backend `service.name`, and the
+# RoleBinding's subject. The values kustomize cannot infer — the public
+# hostname and the in-cluster callback URL — are patched below.
+#
+#   kubectl create secret generic lambda-xtb-callback-test \
+#     --from-literal=token=$(openssl rand -hex 32) -n krupicka-ns
+#   kubectl apply -k k8s/overlays/test
+namespace: krupicka-ns
+nameSuffix: -test
+
+# `nameSuffix` renames objects but NOT label values, and Service selectors match
+# on labels, not names. Left alone, the test Service's selector `app: lambda-xtb`
+# would also match prod's frontend pod — and prod's Service would match the test
+# pod — so each instance would serve a share of the other's traffic against the
+# wrong SQLite. Re-labelling test's pods (selectors included) is what actually
+# keeps the two apart; prod needs no change, because `app: lambda-xtb` then
+# matches prod's pods only.
+labels:
+  - pairs:
+      app: lambda-xtb-test
+    includeSelectors: true
+  # Plain marker label (not a selector, so it stays mutable) on every object, so
+  # `kubectl get all -l instance=test` covers the whole instance. The pod
+  # template gets the same label from deployment-patch.yaml rather than via
+  # `includeTemplates: true`, which needs kustomize v5.3+ — newer than the one
+  # embedded in CERIT-SC's kubectl.
+  - pairs:
+      instance: test
+
+resources:
+  - ../../base
+
+patches:
+  - path: deployment-patch.yaml
+  - target:
+      kind: Ingress
+      name: lambda-xtb-ingress
+    patch: |-
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: lambda-xtb-test.dyn.cloud.e-infra.cz
+      - op: replace
+        path: /spec/tls/0/secretName
+        value: lambda-xtb-test-dyn-cloud-e-infra-cz-tls
+      - op: replace
+        path: /spec/rules/0/host
+        value: lambda-xtb-test.dyn.cloud.e-infra.cz

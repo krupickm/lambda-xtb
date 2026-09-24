@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="refresh" content="10" />
+    <title>λ‑xTB — calculating…</title>
+    <style>
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 1.2rem; }
+      .card { max-width: 700px; margin: auto; padding: 1.4rem; border: 1px solid #ddd; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); text-align: center; }
+      .spinner { margin: 1.2rem auto; width: 2.2rem; height: 2.2rem; border: 4px solid #ddd; border-top-color: #246; border-radius: 50%; animation: spin 1s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      p.hint { color: #555; }
+      footer { margin-top: 1.5rem; font-size: 0.9rem; color: #555; }
+    </style>
+  </head>
+  <body>
+    <section class="card">
+      <h1>Calculating λ…</h1>
+      <div class="spinner"></div>
+      <p id="statusText">Status: PENDING</p>
+      <p class="hint">
+        This page refreshes itself automatically — you can leave it open, or
+        close it and come back to this link later. A calculation typically
+        takes 1–2 minutes.
+      </p>
+
+      <footer>
+        <p style="color:#aaa; font-size:0.8rem;">build {{ build_version }}</p>
+      </footer>
+    </section>
+
+    <script>
+      // Client-side poll of the internal status API (SERVICE_SPLIT.md, "API
+      // Contract"). On DONE/SEEN the API returns a `redirect` straight to
+      // /stats/<uuid>; on ERROR there is no redirect, so we bounce to the
+      // form with the message attached as a query param, which the server
+      // turns into a normal flash message (see the `index()` route).
+      const statusUrl = {{ url_for('api_job_status', job_uuid=job_uuid) | tojson }};
+      const indexUrl = {{ url_for('index') | tojson }};
+      const statusText = document.getElementById('statusText');
+      const POLL_INTERVAL_MS = 3000;
+
+      async function poll() {
+        try {
+          const resp = await fetch(statusUrl);
+          if (resp.ok) {
+            const data = await resp.json();
+            statusText.textContent = 'Status: ' + data.status;
+
+            if (data.redirect) {
+              window.location = data.redirect;
+              return;
+            }
+            if (data.status === 'ERROR') {
+              const message = data.error || 'Calculation failed.';
+              window.location = indexUrl + '?error=' + encodeURIComponent(message);
+              return;
+            }
+          }
+        } catch (err) {
+          // Transient network error while polling — just try again.
+        }
+        setTimeout(poll, POLL_INTERVAL_MS);
+      }
+
+      poll();
+    </script>
+  </body>
+</html>

@@ -36,20 +36,58 @@ Usage
     python lambda_xtb.py "c1ccc2ccccc2c1"       # naphthalene from SMILES arg
 """
 
+import json
 import os
+import pprint
 import shutil
 import sys
 import tempfile
-import numpy as np
-import pprint
-import json
 from concurrent.futures import ThreadPoolExecutor
+
 import easyxtb
 from easyxtb.calc import XTB as _XTB_PROGRAM
 
+
+def _xtb_nproc_from_env() -> int:
+    """
+    CREST conformer-search parallelism budget for this process, read from
+    the XTB_NPROC env var (default 1, matching today's local/dev behaviour).
+    A dedicated 14-CPU compute Job sets this higher.
+
+    CREST is the only stage here that benefits from more CPUs: it runs many
+    independent, single-threaded conformer searches concurrently. A single
+    xtb ANCopt/single-point call does NOT benefit from OpenMP/-P threading on
+    molecules this small — synchronization overhead outweighs the gain — so
+    every individual xtb worker (opt, SP, and each CREST conformer) always
+    runs on 1 CPU regardless of this budget; see the module-level config
+    below and `get_lowest_conformer`.
+    """
+    raw = os.environ.get("XTB_NPROC", "1")
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 1
+    return n if n > 0 else 1
+
+
+#: CREST conformer-search parallelism budget (see `_xtb_nproc_from_env`).
+XTB_NPROC = _xtb_nproc_from_env()
+
+#: Number of concurrent tasks in calculate_lambda()'s opt / single-point
+#: phases. Pool-level (process) parallelism across independent, single-CPU
+#: xtb workers is fine and unaffected by XTB_NPROC; kept fixed per
+#: SERVICE_SPLIT.md.
+OPT_WORKERS = 3
+SP_WORKERS = 4
+
 # easyxtb auto-detects n_proc from os.cpu_count() // 1.3 at import time.
 # On a k8s node this can be 70-100 CPUs, causing xtb to receive -P 98 and
-# hang or thrash. Override to 1 globally; CREST passes n_proc=4 explicitly.
+# hang or thrash — and even at modest values, OpenMP threading inside a
+# single xtb call on molecules this small tends to lose time to
+# synchronization overhead rather than gain from it. Pin every individual
+# xtb call to 1 CPU always; only CREST's own internal parallelism (how many
+# single-threaded conformer searches it runs concurrently) scales with
+# XTB_NPROC.
 easyxtb.configuration.config["n_proc"] = 1
 os.environ["OMP_NUM_THREADS"] = "1"
 
@@ -66,7 +104,10 @@ def ase_to_easyxtb(atoms, charge: int, uhf: int):
     from easyxtb.geometry import Atom as XAtom
 
     return XGeometry(
-        [XAtom(sym, *pos) for sym, pos in zip(atoms.get_chemical_symbols(), atoms.get_positions())],
+        [
+            XAtom(sym, *pos)
+            for sym, pos in zip(atoms.get_chemical_symbols(), atoms.get_positions(), strict=True)
+        ],
         charge=charge, spin=uhf
     )
 
@@ -90,9 +131,9 @@ def smiles_to_atoms(smiles: str):
     Returns (ASE Atoms, RDKit mol-with-Hs) so callers can inspect the molecule.
     Positions in Angstrom, no periodic boundary conditions.
     """
+    from ase import Atoms
     from rdkit import Chem
     from rdkit.Chem import AllChem
-    from ase import Atoms
 
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -152,13 +193,12 @@ def get_lowest_conformer(atoms, charge: int, uhf: int):
     import easyxtb
 
     geom = ase_to_easyxtb(atoms, charge=charge, uhf=uhf)
-    print(f"  Running CREST --squick --gfnff ({len(atoms)} atoms) ...", flush=True)
+    print(f"  Running CREST --squick --gfnff ({len(atoms)} atoms, n_proc={XTB_NPROC}) ...", flush=True)
 
-    os.environ["OMP_NUM_THREADS"] = "4"
     try:
         conformers = easyxtb.calculate.conformers(
             geom,
-            n_proc=4,
+            n_proc=XTB_NPROC,
             options={"squick": True, "gfnff": True}
         )
     except Exception as e:
@@ -166,8 +206,6 @@ def get_lowest_conformer(atoms, charge: int, uhf: int):
             f"CREST conformer search failed — is 'crest' in PATH?\n"
             f"Original error: {e}"
         ) from e
-    finally:
-        os.environ["OMP_NUM_THREADS"] = "1"
 
     if not conformers:
         raise RuntimeError("CREST returned no conformers — check CREST output for errors.")
@@ -193,7 +231,11 @@ def optimize_xtb(atoms_in, charge: int, uhf: int,
     cfg = easyxtb.configuration.config
     geom = ase_to_easyxtb(atoms_in, charge, uhf)
     tag = label or f"charge={charge:+d} uhf={uhf}"
-    print(f"  Optimizing  [{tag}] ({level}) ...", end=" ", flush=True)
+    # Single, self-contained line per event (no split start/finish print):
+    # optimize_xtb runs concurrently (ThreadPoolExecutor) in calculate_lambda,
+    # so interleaved output from other calls must not split a line or drop
+    # the tag from the completion message.
+    print(f"  Optimizing  [{tag}] ({level}) ...", flush=True)
 
     calc_dir = tempfile.mkdtemp()
     try:
@@ -216,7 +258,7 @@ def optimize_xtb(atoms_in, charge: int, uhf: int,
     if not converged or "FAILED TO CONVERGE" in output:
         raise RuntimeError(f"xtb ANCopt ({level}) did not converge for [{tag}]")
 
-    print(f"converged  E = {energy:.8f} Eh")
+    print(f"  Optimizing  [{tag}] ({level}) ... converged  E = {energy:.8f} Eh")
     return easyxtb_to_ase(geom_out), energy
 
 
@@ -231,7 +273,9 @@ def singlepoint_xtb(atoms_in, charge: int, uhf: int, label: str = "") -> float:
     cfg = easyxtb.configuration.config
     geom = ase_to_easyxtb(atoms_in, charge, uhf)
     tag = label or f"charge={charge:+d} uhf={uhf}"
-    print(f"  Single-point [{tag}] ...", end=" ", flush=True)
+    # Single, self-contained line per event — see the comment in optimize_xtb;
+    # singlepoint_xtb also runs concurrently in calculate_lambda's SP phase.
+    print(f"  Single-point [{tag}] ...", flush=True)
 
     calc_dir = tempfile.mkdtemp()
     try:
@@ -246,7 +290,7 @@ def singlepoint_xtb(atoms_in, charge: int, uhf: int, label: str = "") -> float:
     finally:
         shutil.rmtree(calc_dir, ignore_errors=True)
 
-    print(f"{energy:.8f} Eh")
+    print(f"  Single-point [{tag}] ... {energy:.8f} Eh")
     return energy
 
 
@@ -276,8 +320,9 @@ def save_results(results: dict, smiles: str, path: str = "lambda_results.json"):
 
 def atoms_to_xyz(atoms):
     """Return an XYZ-formatted string for an ASE Atoms object."""
-    from ase.io import write
     import io
+
+    from ase.io import write
 
     buf = io.StringIO()
     write(buf, atoms, format="xyz")
@@ -308,6 +353,9 @@ def calculate_lambda(smiles: str) -> dict:
     print(f"\n{'='*60}")
     print(f"  Molecule : {smiles}")
     print(f"{'='*60}")
+    print(f"  Parallelism: XTB_NPROC={XTB_NPROC} (CREST fan-out only; "
+          f"each xtb opt/SP call pinned to 1 CPU; "
+          f"opt_workers={OPT_WORKERS}, sp_workers={SP_WORKERS})")
 
     # ── starting geometry ────────────────────────────────────────────
     print("\n[1/5] Generating 3D starting geometry from SMILES ...")
@@ -328,7 +376,7 @@ def calculate_lambda(smiles: str) -> dict:
 
     # ── three tight GFN2-xTB optimizations (parallel) ────────────────
     print("\n[4/5] Tight GFN2-xTB optimizations (parallel) ...")
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=OPT_WORKERS) as pool:
         f0     = pool.submit(optimize_xtb, atoms0_best,  0,  0, "tight", "neutral")
         fplus  = pool.submit(optimize_xtb, atoms0_best, +1,  1, "tight", "cation ")
         fminus = pool.submit(optimize_xtb, atoms0_best, -1,  1, "tight", "anion  ")
@@ -338,7 +386,7 @@ def calculate_lambda(smiles: str) -> dict:
 
     # ── four single-points (parallel) ────────────────────────────────
     print("\n[5/5] Cross single-points (parallel) ...")
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=SP_WORKERS) as pool:
         f1 = pool.submit(singlepoint_xtb, geo0,      +1, 1, "cation  @ neutral geo")
         f2 = pool.submit(singlepoint_xtb, geo0,      -1, 1, "anion   @ neutral geo")
         f3 = pool.submit(singlepoint_xtb, geo_plus,   0, 0, "neutral @ cation  geo")
@@ -362,7 +410,7 @@ def calculate_lambda(smiles: str) -> dict:
 
     # ── report ───────────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print(f"  Results")
+    print("  Results")
     print(f"{'='*60}")
     print(f"  λ⁺  (hole)     = {lam_plus_ev*1000:8.1f} meV  ({lam_plus_ev:.4f} eV)")
     print(f"    λ₁⁺           = {lam1_plus*EH_TO_EV*1000:8.1f} meV  (cation relaxation)")

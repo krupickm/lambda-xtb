@@ -1,0 +1,83 @@
+name: CI
+
+# The gate every change goes through: lint, the mocked unit tests, and one
+# real xtb calculation. Target is "under a few minutes" — the slowest part is
+# pulling the base image, not the tests themselves.
+#
+# Two ways in:
+#   - pull_request        — the check you watch before merging.
+#   - workflow_call       — invoked by docker-build.yml, so that nothing is
+#                           ever built or released from a red tree.
+# There is deliberately NO `push: main` trigger: pushes to main arrive here
+# through docker-build.yml's call, and a second standalone run would only
+# duplicate the work.
+
+on:
+  pull_request:
+  workflow_call: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Pinned: an unpinned linter turns a green main red on someone else's
+      # release schedule. Bump deliberately, in its own PR.
+      - name: Install ruff
+        run: pip install ruff==0.16.8
+
+      - name: Lint
+        run: ruff check --output-format=github .
+
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+
+    # Run inside the same base image production runs, rather than rebuilding a
+    # conda env per job: environment.yml is fully pinned and takes 2-3 min to
+    # solve, and the CESNET S3 channels it names are not reachable from every
+    # runner. This also means the smoke test exercises the exact xtb build that
+    # ships, not an approximation of it.
+    container:
+      image: cerit.io/krupickm/lambda-xtb-base:latest
+      credentials:
+        username: ${{ secrets.HARBOR_USERNAME }}
+        password: ${{ secrets.HARBOR_PASSWORD }}
+
+    env:
+      # easyxtb scratch dir — matches k8s/base/deployment.yaml.
+      XDG_DATA_HOME: /tmp
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The image's own ENV sets this, but a container job's PATH is assembled
+      # by the runner; make the conda env explicit rather than hope.
+      - name: Put the conda env on PATH
+        run: echo "/opt/conda/envs/xtb-lambda/bin" >> "$GITHUB_PATH"
+
+      # Test-only dependency, kept out of environment.yml on purpose: adding it
+      # there would trigger a base-image rebuild for every consumer of the env.
+      - name: Install pytest
+        run: pip install --no-cache-dir "pytest==8.4.2"
+
+      - name: Unit tests (xtb mocked)
+        run: pytest -q -m "not smoke and not slow"
+
+      # The one test that actually runs xtb. Ethylene, ~8 s. If this fails but
+      # the unit tests pass, the bug is in the environment, not the code.
+      - name: Smoke test (real xtb, ethylene)
+        run: pytest -q -m smoke

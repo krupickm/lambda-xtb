@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lambda-xtb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lambda-xtb
+  template:
+    metadata:
+      labels:
+        app: lambda-xtb
+    spec:
+      serviceAccountName: lambda-xtb-sa
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: lambda-xtb
+          # Pinned to a release tag, never :latest — a λ value that ends up in
+          # a paper has to be traceable to an exact image, and a rollback is
+          # then just re-pinning the previous tag. Bump this AND COMPUTE_IMAGE
+          # below in the same commit, merge, then tag that commit: the release
+          # workflow refuses to build a tag the manifest does not pin
+          # (see .github/workflows/docker-build.yml). Do not `kubectl apply -k`
+          # a bump before its tag is built — the image does not exist yet.
+          image: cerit.io/krupickm/lambda-xtb:v1.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+          securityContext:
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: DATABASE_URL
+              value: "sqlite:///data/lambda.db"
+            - name: OMP_NUM_THREADS
+              value: "4"
+            - name: XDG_DATA_HOME
+              value: "/tmp"
+            - name: NAMESPACE
+              value: "krupicka-ns"
+            - name: COMPUTE_IMAGE
+              # Must equal the frontend image above; the release workflow
+              # checks that both point at the tag being released.
+              value: "cerit.io/krupickm/lambda-xtb:v1.2"
+            - name: CALLBACK_BASE_URL
+              value: "http://lambda-xtb-svc.krupicka-ns.svc.cluster.local"
+            - name: CALLBACK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lambda-xtb-callback
+                  key: token
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          # The frontend only serves the UI/API and spawns Jobs — the heavy
+          # work happens in the compute Job, not here. 1 CPU, little memory.
+          resources:
+            requests:
+              cpu: "1"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: lambda-xtb-data

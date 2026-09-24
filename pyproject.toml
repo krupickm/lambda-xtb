@@ -1,0 +1,26 @@
+# Tooling configuration only.
+#
+# λ-xTB is a deployed application, not a distributable package: there is no
+# [project] table and nothing here is ever `pip install`ed. The file exists so
+# that `ruff` and `pytest` behave identically on a laptop and in CI.
+
+[tool.ruff]
+# Every line in the tree already fits in 110 columns; enforcing that keeps the
+# limit honest without a repo-wide reformat.
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+# Deliberately narrow. E/F are pycodestyle errors and pyflakes (real mistakes:
+# undefined names, unused imports, broken f-strings); I keeps import blocks
+# sorted; B (flake8-bugbear) catches the silent-footgun patterns. Style beyond
+# that is NOT enforced — `ruff format` would rewrite every file at once and
+# collide with anything in flight.
+select = ["E", "F", "I", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "smoke: runs a real xtb calculation on a tiny molecule (~7 s); needs the conda env",
+    "slow: realistic-size calculation (minutes) — nightly or release only, never per-commit",
+]

@@ -1,0 +1,37 @@
+# Test-instance Deployment differences. Strategic-merge: `env` entries merge
+# by name, so only the vars named here are added/overridden.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lambda-xtb
+spec:
+  # 1 replica + a ReadWriteOnce PVC cannot roll: the new pod blocks waiting for
+  # a volume the old pod still holds if it lands on another node. Recreate
+  # trades a few seconds of downtime for a rollout that always finishes.
+  # (Prod should get this too, but only after the presentation — see WP11.)
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      # Marker label on the pod itself — on older kustomize the `labels`
+      # transformer reaches object metadata only — so `kubectl get pods
+      # -l instance=test` lists the frontend alongside its compute Job pods.
+      labels:
+        instance: test
+    spec:
+      containers:
+        - name: lambda-xtb
+          env:
+            # Points at this instance's own Service (nameSuffix'd), so worker
+            # callbacks land in the test frontend's SQLite, never prod's.
+            - name: CALLBACK_BASE_URL
+              value: "http://lambda-xtb-svc-test.krupicka-ns.svc.cluster.local"
+            # Labels spawned compute Jobs `instance: test` for attribution
+            # while both instances share a namespace.
+            - name: INSTANCE
+              value: "test"
+            # Job size is deliberately NOT overridden here: test runs the same
+            # full-power 14-CPU Jobs as prod (jobs.py defaults), so a run here
+            # reproduces prod's timings and thread behaviour rather than a
+            # scaled-down approximation. Override JOB_CPU / JOB_MEMORY_REQUEST
+            # / JOB_MEMORY_LIMIT if the namespace quota ever needs the room.
