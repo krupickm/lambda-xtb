@@ -36,9 +36,15 @@ relevant parts; do not invent alternative endpoints, JSON keys, or states.
 
 - Conda env **`xtb-lambda`** (Python 3.11). Activate it before running anything.
 - Run the app: `FLASK_APP=app.py flask run --host=0.0.0.0`
-- Tests: **pytest**. If missing, `pip install pytest` into the active env (dev-only; only
-  add it to `environment.yml` if your WP already edits deps, since that triggers a
-  base-image rebuild).
+- Tests: **pytest**. Lint: **ruff**. If either is missing, `pip install pytest ruff` into the
+  active env (dev-only; only add them to `environment.yml` if your WP already edits deps,
+  since that triggers a base-image rebuild).
+- `pyproject.toml` configures both. Run `ruff check .` and `pytest -q` before you hand back —
+  CI runs exactly these and `main` is expected to stay green.
+- Markers: `smoke` is the one test that runs real xtb (~8 s); `slow` is for realistic-size
+  calculations and must never run per-commit. CI's fast pass is
+  `pytest -q -m "not smoke and not slow"`. If your WP adds a test that takes minutes, mark
+  it `slow`.
 - If there is no `tests/` directory yet, create it with an empty `tests/__init__.py` and a
   `tests/conftest.py` as needed.
 
@@ -71,8 +77,12 @@ touch — see §4.)
 - ✅ Keep the diff **minimal and reviewable**.
 - ✅ Work on a feature branch: `git checkout -b wp<N>-<short-slug>` (off `main`, or off the
   dependency branch if the human tells you which). Commit locally with clear messages
-  ending in:
-  `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`
+  ending in the attribution trailer your harness gives you for this session — the model
+  name in it is whichever model you actually are, not a name copied from this file:
+  ```
+  Co-Authored-By: Claude <model> <noreply@anthropic.com>
+  Claude-Session: <session URL>
+  ```
 - ✅ Leave the branch **committed but unpushed** for human review, unless told otherwise.
 
 ---
@@ -98,6 +108,7 @@ Copy this into your final message with each box marked:
 
 - [ ] Every acceptance-criteria item from the issue is implemented **and** covered by a test.
 - [ ] `pytest -q` passes (paste the command + output tail).
+- [ ] `ruff check .` passes (same config CI uses; paste the tail).
 - [ ] No files changed outside the WP’s stated scope.
 - [ ] Reused existing helpers instead of duplicating (`calculate_lambda`, `atoms_to_xyz`,
       `JobStatus`, `_canonical_smiles`, guarded-`UPDATE` pattern).
