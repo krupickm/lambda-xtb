@@ -1,19 +1,76 @@
 name: Build & Push Docker Image
 
+# Builds the single image both instances run and rolls it out to ONE of them.
+#
+# A push to `main` deploys prod. Any other deploy is a manual dispatch, which
+# defaults to the test instance; asking for prod from a ref other than `main`
+# is refused outright (see "Resolve target instance") so that work in progress
+# on a feature branch can never roll the demo instance.
+#
+# This workflow deliberately never runs `kubectl apply`. Manifests live in
+# k8s/overlays/{prod,test} and are applied by hand (see SERVICE_SPLIT.md,
+# "Instances"), so no CI run can rewrite an instance's spec.
+
 on:
   push:
     branches:
       - main
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      instance:
+        description: "Instance to build & deploy"
+        type: choice
+        options:
+          - test
+          - prod
+        default: test
+        required: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  REGISTRY_IMAGE: cerit.io/krupickm/lambda-xtb
+  NAMESPACE: krupicka-ns
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Resolve target instance
+        id: target
+        env:
+          INSTANCE: ${{ github.event_name == 'workflow_dispatch' && inputs.instance || 'prod' }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$INSTANCE" = "prod" ] && [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::Refusing to deploy instance=prod from $REF — prod deploys only from refs/heads/main."
+            exit 1
+          fi
+
+          # `:latest` is what an unpinned manifest pulls, so only a prod build
+          # is allowed to move it. Every build is addressable by :<sha>.
+          tags="${REGISTRY_IMAGE}:${SHA}"
+          if [ "$INSTANCE" = "prod" ]; then
+            deployment="lambda-xtb"
+            tags="${REGISTRY_IMAGE}:latest"$'\n'"${tags}"
+          else
+            deployment="lambda-xtb-test"
+          fi
+
+          {
+            echo "instance=${INSTANCE}"
+            echo "deployment=${deployment}"
+            echo "image=${REGISTRY_IMAGE}:${SHA}"
+            echo "tags<<__TAGS__"
+            echo "${tags}"
+            echo "__TAGS__"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Deploying instance=${INSTANCE} to deployment/${deployment} from ${REF}" >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@v4
 
       - name: Set up QEMU
@@ -34,28 +91,34 @@ jobs:
         with:
           context: .
           push: true
-          tags: |
-            cerit.io/krupickm/lambda-xtb:latest
-            cerit.io/krupickm/lambda-xtb:${{ github.sha }}
+          tags: ${{ steps.target.outputs.tags }}
           platforms: linux/amd64
           build-args: |
             BUILD_VERSION=${{ github.run_number }}
 
-      - name: Rollout restart on Kubernetes
+      - name: Roll out to Kubernetes
         env:
           KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
+          DEPLOYMENT: ${{ steps.target.outputs.deployment }}
+          IMAGE: ${{ steps.target.outputs.image }}
         run: |
+          set -euo pipefail
+
           if [ -z "$KUBECONFIG_DATA" ]; then
-            echo "KUBECONFIG_DATA secret not set — skipping rollout restart"
+            echo "KUBECONFIG_DATA secret not set — skipping rollout"
             exit 0
           fi
           mkdir -p ~/.kube
           echo "$KUBECONFIG_DATA" > ~/.kube/config
           chmod 600 ~/.kube/config
-          kubectl set image deployment/lambda-xtb \
-            lambda-xtb=cerit.io/krupickm/lambda-xtb:${{ github.sha }} \
-            -n krupicka-ns
-          kubectl set env deployment/lambda-xtb \
-            COMPUTE_IMAGE=cerit.io/krupickm/lambda-xtb:${{ github.sha }} \
-            -n krupicka-ns
-          kubectl rollout status deployment/lambda-xtb -n krupicka-ns --timeout=300s
+
+          # The container name is `lambda-xtb` in both instances — only the
+          # Deployment name carries the kustomize nameSuffix.
+          kubectl set image "deployment/${DEPLOYMENT}" \
+            "lambda-xtb=${IMAGE}" \
+            -n "$NAMESPACE"
+          # Keep the Job-spawner image in lockstep with the frontend (WP9).
+          kubectl set env "deployment/${DEPLOYMENT}" \
+            "COMPUTE_IMAGE=${IMAGE}" \
+            -n "$NAMESPACE"
+          kubectl rollout status "deployment/${DEPLOYMENT}" -n "$NAMESPACE" --timeout=300s

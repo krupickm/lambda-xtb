@@ -1,0 +1,35 @@
+# Test-instance Deployment differences. Strategic-merge: `env` entries merge
+# by name, so only the vars named here are added/overridden.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lambda-xtb
+spec:
+  # 1 replica + a ReadWriteOnce PVC cannot roll: the new pod blocks waiting for
+  # a volume the old pod still holds if it lands on another node. Recreate
+  # trades a few seconds of downtime for a rollout that always finishes.
+  # (Prod should get this too, but only after the presentation — see WP11.)
+  strategy:
+    type: Recreate
+  template:
+    spec:
+      containers:
+        - name: lambda-xtb
+          env:
+            # Points at this instance's own Service (nameSuffix'd), so worker
+            # callbacks land in the test frontend's SQLite, never prod's.
+            - name: CALLBACK_BASE_URL
+              value: "http://lambda-xtb-svc-test.krupicka-ns.svc.cluster.local"
+            # Labels spawned compute Jobs `instance: test` for attribution
+            # while both instances share a namespace.
+            - name: INSTANCE
+              value: "test"
+            # Small Jobs: the test instance exercises the split, it does not
+            # need prod's 14 CPUs, and it must not eat prod's quota headroom.
+            # XTB_NPROC follows JOB_CPU automatically.
+            - name: JOB_CPU
+              value: "2"
+            - name: JOB_MEMORY_REQUEST
+              value: "2Gi"
+            - name: JOB_MEMORY_LIMIT
+              value: "4Gi"

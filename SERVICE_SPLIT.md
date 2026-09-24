@@ -3,7 +3,7 @@
 ## Context
 
 Today λ-xTB is a **single monolithic Flask pod** on CERIT-SC Kubernetes that requests
-**4 CPU / 2Gi 24/7** ([k8s/deployment.yaml](k8s/deployment.yaml)) even though it is idle
+**4 CPU / 2Gi 24/7** ([k8s/base/deployment.yaml](k8s/base/deployment.yaml)) even though it is idle
 almost all the time. Worse, `POST /calculate` runs the 60–120 s `calculate_lambda()`
 **synchronously inside the HTTP request** ([app.py:65](app.py#L65)), so the single pod
 blocks on one calculation at a time and can time out behind the ingress.
@@ -55,7 +55,7 @@ Browser  (poll sees DONE) ──▶ redirect to existing /stats/<uuid>
 ```
 
 - Compute reaches the frontend via the in-cluster Service DNS
-  `http://lambda-xtb-svc.krupicka-ns.svc.cluster.local` (existing [k8s/service.yaml](k8s/service.yaml)).
+  `http://lambda-xtb-svc.krupicka-ns.svc.cluster.local` (existing [k8s/base/service.yaml](k8s/base/service.yaml)).
 - Callbacks are authenticated with a shared **Bearer token** (k8s Secret), injected into
   both the frontend and each Job. This is the "DB reached via API from computing" the
   user asked for — **no dedicated DB container**; SQLite stays in the frontend on the PVC.
@@ -160,7 +160,7 @@ Helper `create_compute_job(job_uuid, smiles)` using the official **`kubernetes`*
 client (in-cluster config via the mounted ServiceAccount). Builds a Job with:
 `restartPolicy: Never`, `backoffLimit: 1`, `ttlSecondsAfterFinished: 3600` (auto-clean),
 `command: ["python","compute_runner.py"]`, image `COMPUTE_IMAGE` (same SHA as frontend),
-CERIT-SC **restricted securityContext** (mirror [k8s/deployment.yaml:175-191](k8s/deployment.yaml#L175)),
+CERIT-SC **restricted securityContext** (mirror [k8s/base/deployment.yaml:175-191](k8s/base/deployment.yaml#L175)),
 `emptyDir` mounted at `/tmp` for xtb/CREST scratch, resources
 `requests/limits cpu: "14"`, memory (e.g. `4Gi`/`16Gi`), and env
 `JOB_UUID/SMILES/CALLBACK_BASE_URL/CALLBACK_TOKEN/XTB_NPROC`.
@@ -230,8 +230,71 @@ env so it matches: `kubectl set env deployment/lambda-xtb COMPUTE_IMAGE=cerit.io
 - `JobStatus` enum incl. unused `PENDING`/`PROCESSING` — [db.py:23](db.py#L23): now wired in.
 - `find_all_by_canonical()` / `get_job()` / stats math — [app.py:89-101](app.py#L89),
   [db.py:144](db.py#L144): unchanged.
-- Restricted securityContext block — copy from [k8s/deployment.yaml:175](k8s/deployment.yaml#L175)
+- Restricted securityContext block — copy from [k8s/base/deployment.yaml:175](k8s/base/deployment.yaml#L175)
   into the Job spec so CERIT-SC PSS admits the compute pod.
+
+---
+
+## Instances (prod + test)
+
+Two independent copies of the whole stack run side by side in `krupicka-ns`, from the
+**same image**. Nothing in the source knows which one it is: every difference is a
+manifest/env value, so a change can be exercised end-to-end on `test` without touching
+the instance being demoed.
+
+| | prod | test |
+|---|---|---|
+| URL | `lambda-xtb.dyn.cloud.e-infra.cz` | `lambda-xtb-test.dyn.cloud.e-infra.cz` |
+| Deployment / Service | `lambda-xtb` / `lambda-xtb-svc` | `lambda-xtb-test` / `lambda-xtb-svc-test` |
+| PVC (its own SQLite) | `lambda-xtb-data` | `lambda-xtb-data-test` |
+| Callback token Secret | `lambda-xtb-callback` | `lambda-xtb-callback-test` |
+| Compute Job size | 14 CPU / 4–16Gi | 2 CPU / 2–4Gi (`JOB_CPU`, `JOB_MEMORY_*`) |
+| Spawned Jobs labelled | `instance=prod` | `instance=test` |
+| Rollout strategy | RollingUpdate (legacy) | `Recreate` |
+| Gets `:latest` | yes | no — `:<sha>` only |
+
+They cannot interfere: compute Jobs mount only an `emptyDir` scratch and never a PVC
+(results travel back by HTTP callback), Job names carry a uuid4, and `reconcile()` reads
+Jobs **by exact name**, never by label selector — the `instance` label is for humans and
+quota accounting only.
+
+### Manifests — `k8s/`
+
+`k8s/base/` holds the six instance-independent manifests; `k8s/overlays/{prod,test}/`
+add what differs, via kustomize (built into kubectl — no extra tooling).
+
+- **prod** changes nothing but the namespace: every name is byte-identical to what is
+  live, so an apply **adopts** the running objects instead of creating a parallel set.
+- **test** sets `nameSuffix: -test` and patches the public host, the in-cluster
+  `CALLBACK_BASE_URL`, `INSTANCE`, the Job size, and `strategy: Recreate`. Kustomize
+  rewrites the cross-references (PVC `claimName`, `secretKeyRef.name`,
+  `serviceAccountName`, RoleBinding subject, Ingress backend service).
+
+```bash
+kubectl kustomize k8s/overlays/prod          # inspect — expect today's exact names
+kubectl apply -k k8s/overlays/prod --dry-run=server -n krupicka-ns
+kubectl apply -k k8s/overlays/test
+```
+
+Applying an overlay is always a **deliberate manual step** — CI never applies manifests,
+so no pipeline run can rewrite prod's spec.
+
+### Bringing the test instance up
+
+```bash
+kubectl create secret generic lambda-xtb-callback-test \
+  --from-literal=token=$(openssl rand -hex 32) -n krupicka-ns
+kubectl apply -k k8s/overlays/test
+gh workflow run "Build & Push Docker Image" --ref <branch> -f instance=test
+```
+
+The Secret carries no value in git (base declares the name only, so re-applying an
+overlay can never overwrite a live token), and the overlay must exist before the workflow
+runs, since the rollout step does `kubectl set image` on an existing Deployment.
+
+**Drift warning:** CI pins the Deployment to `:<sha>` with `kubectl set image` / `set env`.
+Re-applying an overlay afterwards resets the image back to the manifest's `:latest` —
+re-run the workflow for that instance after any apply.
 
 ---
 
@@ -247,7 +310,8 @@ env so it matches: `kubectl set env deployment/lambda-xtb COMPUTE_IMAGE=cerit.io
 4. Test `/error` path with a bad SMILES handed to the worker.
 
 **Cluster (krupicka-ns):**
-1. `kubectl apply -f k8s/` (rbac, secret, updated deployment, svc, ingress, pvc).
+1. `kubectl apply -k k8s/overlays/<instance>` (rbac, secret, deployment, svc, ingress, pvc)
+   — see "Instances" above; create that instance's callback-token Secret first.
 2. `kubectl describe quota -n krupicka-ns` — confirm 14-CPU Jobs fit the namespace quota.
 3. Submit via `https://lambda-xtb.dyn.cloud.e-infra.cz`; watch `kubectl get jobs,pods -w`.
 4. Confirm the compute pod is scheduled with **14 CPU** (`kubectl describe pod <job-pod>`),
@@ -383,7 +447,7 @@ exit. No server, no listener.
 - `build_job_spec(uuid, smiles, image, env)` → pure function returning the Job manifest:
   `restartPolicy: Never`, `backoffLimit: 1`, `ttlSecondsAfterFinished: 3600`,
   `command:["python","compute_runner.py"]`, restricted securityContext (copy
-  [k8s/deployment.yaml:175](k8s/deployment.yaml#L175)), `emptyDir` at `/tmp`, resources
+  [k8s/base/deployment.yaml:175](k8s/base/deployment.yaml#L175)), `emptyDir` at `/tmp`, resources
   `cpu:"14"`, env (`JOB_UUID/SMILES/CALLBACK_BASE_URL/CALLBACK_TOKEN/XTB_NPROC`).
 - `create_compute_job(...)` submits via in-cluster client.
 - `reconcile(uuid)`: query Job status + compare `created_at` to cutoff → mark ERROR on

@@ -1,7 +1,7 @@
 """jobs.py — k8s Job spawning + silent-death reconciliation for compute runs.
 
-The frontend never talks to the worker directly: it spawns one 14-CPU
-Kubernetes Job per calculation (`create_compute_job`) and, since the worker
+The frontend never talks to the worker directly: it spawns one Kubernetes
+Job per calculation (`create_compute_job`) and, since the worker
 is fire-and-forget, can only detect a worker that dies *silently* (OOMKilled,
 evicted, node failure) by polling the Job's own k8s status (`reconcile`).
 See SERVICE_SPLIT.md ("API Contract & Job States" / "Silent-death detection")
@@ -25,9 +25,21 @@ _log = logging.getLogger(__name__)
 
 DEFAULT_BACKOFF_LIMIT = 1
 DEFAULT_TTL_SECONDS_AFTER_FINISHED = 3600
+# Compute-Job size. Overridable per instance via the JOB_CPU /
+# JOB_MEMORY_REQUEST / JOB_MEMORY_LIMIT env vars on the frontend Deployment
+# (see k8s/overlays/) so that prod and a parallel test instance can run
+# different Job sizes off the *same image*. The defaults are prod's values, so
+# an instance that sets nothing behaves exactly as before.
 DEFAULT_CPU = "14"
 DEFAULT_MEMORY_REQUEST = "4Gi"
 DEFAULT_MEMORY_LIMIT = "16Gi"
+
+# Which instance spawned a Job. Purely for attribution: it lands as an
+# `instance: <value>` label so `kubectl get jobs -l instance=test` is
+# unambiguous while several instances share one namespace. Job *names* carry a
+# uuid4 and `reconcile()` reads them by exact name, so correctness never
+# depends on this label.
+DEFAULT_INSTANCE = "prod"
 
 # Belt-and-suspenders timeout for a wedged/garbage-collected job (see
 # SERVICE_SPLIT.md "Silent-death detection"): 15 minutes, overridable via env.
@@ -50,20 +62,33 @@ def job_name(job_uuid: str) -> str:
 def build_job_spec(job_uuid: str, smiles: str, image: str, env: dict[str, str]) -> dict:
     """Build the k8s Job manifest for one compute run. Pure function — no I/O.
 
-    `env` must supply `CALLBACK_BASE_URL`, `CALLBACK_TOKEN`, and `XTB_NPROC`;
+    `env` must supply `CALLBACK_BASE_URL` and `CALLBACK_TOKEN`;
     `JOB_UUID`/`SMILES` are derived from `job_uuid`/`smiles` and injected
-    automatically. Mirrors the restricted securityContext used by the
-    frontend Deployment (k8s/deployment.yaml) so CERIT-SC's restricted Pod
+    automatically. Job size and attribution are read from `env` too, each
+    falling back to its prod default: `JOB_CPU`, `JOB_MEMORY_REQUEST`,
+    `JOB_MEMORY_LIMIT`, `INSTANCE`, and `XTB_NPROC` — which defaults to
+    `JOB_CPU`, so a smaller Job never leaves xtb spawning threads for CPUs it
+    does not have. Mirrors the restricted securityContext used by the frontend
+    Deployment (k8s/base/deployment.yaml) so CERIT-SC's restricted Pod
     Security Standard admits the pod.
     """
-    labels = {"app": "lambda-xtb-compute", "job-uuid": job_uuid}
+    cpu = str(env.get("JOB_CPU") or DEFAULT_CPU)
+    memory_request = str(env.get("JOB_MEMORY_REQUEST") or DEFAULT_MEMORY_REQUEST)
+    memory_limit = str(env.get("JOB_MEMORY_LIMIT") or DEFAULT_MEMORY_LIMIT)
+    nproc = str(env.get("XTB_NPROC") or cpu)
+
+    labels = {
+        "app": "lambda-xtb-compute",
+        "job-uuid": job_uuid,
+        "instance": str(env.get("INSTANCE") or DEFAULT_INSTANCE),
+    }
 
     container_env = [
         {"name": "JOB_UUID", "value": job_uuid},
         {"name": "SMILES", "value": smiles},
         {"name": "CALLBACK_BASE_URL", "value": env["CALLBACK_BASE_URL"]},
         {"name": "CALLBACK_TOKEN", "value": env["CALLBACK_TOKEN"]},
-        {"name": "XTB_NPROC", "value": str(env["XTB_NPROC"])},
+        {"name": "XTB_NPROC", "value": nproc},
     ]
 
     return {
@@ -98,12 +123,12 @@ def build_job_spec(job_uuid: str, smiles: str, image: str, env: dict[str, str]) 
                             "env": container_env,
                             "resources": {
                                 "requests": {
-                                    "cpu": DEFAULT_CPU,
-                                    "memory": DEFAULT_MEMORY_REQUEST,
+                                    "cpu": cpu,
+                                    "memory": memory_request,
                                 },
                                 "limits": {
-                                    "cpu": DEFAULT_CPU,
-                                    "memory": DEFAULT_MEMORY_LIMIT,
+                                    "cpu": cpu,
+                                    "memory": memory_limit,
                                 },
                             },
                             "volumeMounts": [
@@ -139,8 +164,11 @@ def _batch_v1_client():
 def create_compute_job(job_uuid: str, smiles: str) -> None:
     """Submit one compute Job via the in-cluster kubernetes client.
 
-    Reads `COMPUTE_IMAGE`, `NAMESPACE`, `CALLBACK_BASE_URL`, `CALLBACK_TOKEN`,
-    and `XTB_NPROC` (default `"14"`) from the environment.
+    Reads `COMPUTE_IMAGE`, `NAMESPACE`, `CALLBACK_BASE_URL` and
+    `CALLBACK_TOKEN` from the environment, plus the per-instance Job size
+    (`JOB_CPU`, `JOB_MEMORY_REQUEST`, `JOB_MEMORY_LIMIT`), `XTB_NPROC`
+    (defaults to `JOB_CPU`) and `INSTANCE` — all optional, defaulting to
+    prod's values so an instance that sets none of them behaves as before.
 
     Outside a cluster (no in-cluster ServiceAccount config, e.g. local
     `flask run` or a standalone `docker run`) this is a no-op dev
@@ -164,10 +192,15 @@ def create_compute_job(job_uuid: str, smiles: str) -> None:
 
     image = os.environ["COMPUTE_IMAGE"]
     namespace = os.environ.get("NAMESPACE", "default")
+    cpu = os.environ.get("JOB_CPU", DEFAULT_CPU)
     env = {
         "CALLBACK_BASE_URL": os.environ["CALLBACK_BASE_URL"],
         "CALLBACK_TOKEN": os.environ["CALLBACK_TOKEN"],
-        "XTB_NPROC": os.environ.get("XTB_NPROC", DEFAULT_CPU),
+        "JOB_CPU": cpu,
+        "JOB_MEMORY_REQUEST": os.environ.get("JOB_MEMORY_REQUEST", DEFAULT_MEMORY_REQUEST),
+        "JOB_MEMORY_LIMIT": os.environ.get("JOB_MEMORY_LIMIT", DEFAULT_MEMORY_LIMIT),
+        "XTB_NPROC": os.environ.get("XTB_NPROC", cpu),
+        "INSTANCE": os.environ.get("INSTANCE", DEFAULT_INSTANCE),
     }
 
     manifest = build_job_spec(job_uuid, smiles, image, env)

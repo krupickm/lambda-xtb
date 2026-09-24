@@ -234,12 +234,18 @@ sqlite3 -csv -header lambda.db \
 
 ### Manifests (`k8s/`)
 
-| File | Purpose |
+`k8s/base/` + `k8s/overlays/{prod,test}`, applied with `kubectl apply -k` — two
+instances (prod and test) share one image and differ only by overlay. See
+SERVICE_SPLIT.md, "Instances".
+
+| File (`k8s/base/`) | Purpose |
 |------|---------|
-| `deployment.yaml` | 1 replica, 4 CPU / 8Gi, PVC mount, env vars |
+| `deployment.yaml` | 1 replica, PVC mount, env vars |
 | `service.yaml` | ClusterIP on port 80 → 5000 |
 | `ingress.yaml` | TLS via cert-manager, `lambda-xtb.dyn.cloud.e-infra.cz` |
 | `pvc.yaml` | 1Gi ReadWriteOnce for SQLite DB at `/app/data` |
+| `rbac.yaml` | SA + Role/RoleBinding letting the frontend manage compute Jobs |
+| `secret.yaml` | callback-token Secret — name only, value created out-of-band |
 
 Key env vars in the pod:
 
@@ -298,10 +304,10 @@ lambda-xtb/
 ├── Dockerfile                 app image: FROM base + COPY source (~20s build)
 ├── Dockerfile.base            base image: OS patches + conda env (~3min build)
 ├── k8s/
-│   ├── deployment.yaml
-│   ├── service.yaml
-│   ├── ingress.yaml
-│   └── pvc.yaml
+│   ├── base/                  instance-independent manifests
+│   └── overlays/
+│       ├── prod/              names identical to what is live
+│       └── test/              nameSuffix -test, own host/PVC/Job size
 ├── .github/workflows/
 │   ├── docker-build.yml       CI: app image on every push
 │   └── base-image.yml         CI: base image on env/Dockerfile.base change

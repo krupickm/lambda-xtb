@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Test instance — a second, fully independent copy of the whole stack in the
+# same namespace as prod, running the SAME IMAGE. Everything that differs
+# between the two instances is here; no source file knows which instance it
+# is running in.
+#
+# `nameSuffix` renames every resource (lambda-xtb -> lambda-xtb-test,
+# lambda-xtb-svc -> lambda-xtb-svc-test, ...) and kustomize rewrites the
+# cross-references along with them: the Deployment's PVC `claimName` and
+# `secretKeyRef.name`, the Ingress backend `service.name`, and the
+# RoleBinding's subject. The values kustomize cannot infer — the public
+# hostname and the in-cluster callback URL — are patched below.
+#
+#   kubectl create secret generic lambda-xtb-callback-test \
+#     --from-literal=token=$(openssl rand -hex 32) -n krupicka-ns
+#   kubectl apply -k k8s/overlays/test
+namespace: krupicka-ns
+nameSuffix: -test
+
+resources:
+  - ../../base
+
+patches:
+  - path: deployment-patch.yaml
+  - target:
+      kind: Ingress
+      name: lambda-xtb-ingress
+    patch: |-
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: lambda-xtb-test.dyn.cloud.e-infra.cz
+      - op: replace
+        path: /spec/tls/0/secretName
+        value: lambda-xtb-test-dyn-cloud-e-infra-cz-tls
+      - op: replace
+        path: /spec/rules/0/host
+        value: lambda-xtb-test.dyn.cloud.e-infra.cz

@@ -41,7 +41,7 @@ docker run --rm -p 5000:5000 lambda-xtb-local
 ```bash
 module add kubectl
 export KUBECONFIG=../kuba-cluster.yaml
-kubectl apply -f k8s/ -n krupicka-ns
+kubectl apply -k k8s/overlays/prod   # or overlays/test for the test instance
 kubectl get pods    -n krupicka-ns
 kubectl get ingress -n krupicka-ns
 ```

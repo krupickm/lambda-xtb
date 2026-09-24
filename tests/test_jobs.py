@@ -94,6 +94,72 @@ def test_build_job_spec_empty_dir_mounted_at_tmp():
     assert volume["emptyDir"] == {}
 
 
+# ── per-instance Job sizing / attribution (WP11) ────────────────────────────
+#
+# Prod and the parallel test instance run the SAME image, so everything that
+# differs between them arrives as env on the frontend Deployment and must be
+# honoured here. The defaults above (tested by
+# `test_build_job_spec_resources_request_14_cpu`) are prod's values.
+
+INSTANCE_ENV = ENV | {
+    "JOB_CPU": "2",
+    "JOB_MEMORY_REQUEST": "2Gi",
+    "JOB_MEMORY_LIMIT": "4Gi",
+    "INSTANCE": "test",
+}
+
+
+def test_build_job_spec_resources_follow_job_env():
+    manifest = jobs.build_job_spec(str(uuid.uuid4()), "c1ccccc1", "img", INSTANCE_ENV)
+    resources = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]
+
+    assert resources["requests"] == {"cpu": "2", "memory": "2Gi"}
+    assert resources["limits"] == {"cpu": "2", "memory": "4Gi"}
+
+
+def test_build_job_spec_resources_fall_back_to_prod_defaults():
+    """An instance that sets none of the JOB_* vars must keep prod's size."""
+    env = {k: v for k, v in ENV.items() if k != "XTB_NPROC"}
+    manifest = jobs.build_job_spec(str(uuid.uuid4()), "c1ccccc1", "img", env)
+    resources = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]
+
+    assert resources["requests"] == {"cpu": "14", "memory": "4Gi"}
+    assert resources["limits"] == {"cpu": "14", "memory": "16Gi"}
+
+
+def test_build_job_spec_xtb_nproc_follows_job_cpu():
+    """Unset XTB_NPROC must track JOB_CPU — xtb spawning 14 threads inside a
+    2-CPU Job would thrash instead of going faster."""
+    env = {k: v for k, v in INSTANCE_ENV.items() if k != "XTB_NPROC"}
+    manifest = jobs.build_job_spec(str(uuid.uuid4()), "c1ccccc1", "img", env)
+    container = manifest["spec"]["template"]["spec"]["containers"][0]
+    env_by_name = {e["name"]: e["value"] for e in container["env"]}
+
+    assert env_by_name["XTB_NPROC"] == "2"
+
+
+def test_build_job_spec_xtb_nproc_explicit_wins_over_job_cpu():
+    manifest = jobs.build_job_spec(str(uuid.uuid4()), "c1ccccc1", "img", INSTANCE_ENV)
+    container = manifest["spec"]["template"]["spec"]["containers"][0]
+    env_by_name = {e["name"]: e["value"] for e in container["env"]}
+
+    assert env_by_name["XTB_NPROC"] == "14"  # INSTANCE_ENV inherits ENV's value
+
+
+def test_build_job_spec_instance_label_on_job_and_pod_template():
+    manifest = jobs.build_job_spec(str(uuid.uuid4()), "c1ccccc1", "img", INSTANCE_ENV)
+
+    assert manifest["metadata"]["labels"]["instance"] == "test"
+    assert manifest["spec"]["template"]["metadata"]["labels"]["instance"] == "test"
+
+
+def test_build_job_spec_instance_label_defaults_to_prod():
+    manifest = jobs.build_job_spec(str(uuid.uuid4()), "c1ccccc1", "img", ENV)
+
+    assert manifest["metadata"]["labels"]["instance"] == "prod"
+    assert manifest["spec"]["template"]["metadata"]["labels"]["instance"] == "prod"
+
+
 # ── create_compute_job ───────────────────────────────────────────────────────
 
 def test_create_compute_job_submits_via_batch_v1(monkeypatch):
@@ -111,6 +177,50 @@ def test_create_compute_job_submits_via_batch_v1(monkeypatch):
     _, kwargs = fake_batch_v1.create_namespaced_job.call_args
     assert kwargs["namespace"] == "krupicka-ns"
     assert kwargs["body"]["metadata"]["name"] == jobs.job_name(job_uuid)
+
+
+def test_create_compute_job_passes_instance_env_through(monkeypatch):
+    """The JOB_*/INSTANCE vars set on the frontend Deployment must reach the
+    spawned Job — this is the whole mechanism the test instance relies on."""
+    fake_batch_v1 = MagicMock()
+    monkeypatch.setattr(jobs, "_batch_v1_client", lambda: fake_batch_v1)
+    monkeypatch.setenv("COMPUTE_IMAGE", "img")
+    monkeypatch.setenv("NAMESPACE", "krupicka-ns")
+    monkeypatch.setenv("CALLBACK_BASE_URL", ENV["CALLBACK_BASE_URL"])
+    monkeypatch.setenv("CALLBACK_TOKEN", ENV["CALLBACK_TOKEN"])
+    monkeypatch.setenv("JOB_CPU", "2")
+    monkeypatch.setenv("JOB_MEMORY_REQUEST", "2Gi")
+    monkeypatch.setenv("JOB_MEMORY_LIMIT", "4Gi")
+    monkeypatch.setenv("INSTANCE", "test")
+    monkeypatch.delenv("XTB_NPROC", raising=False)
+
+    jobs.create_compute_job(str(uuid.uuid4()), "c1ccccc1")
+
+    _, kwargs = fake_batch_v1.create_namespaced_job.call_args
+    container = kwargs["body"]["spec"]["template"]["spec"]["containers"][0]
+    assert container["resources"]["requests"] == {"cpu": "2", "memory": "2Gi"}
+    assert container["resources"]["limits"] == {"cpu": "2", "memory": "4Gi"}
+    assert {e["name"]: e["value"] for e in container["env"]}["XTB_NPROC"] == "2"
+    assert kwargs["body"]["metadata"]["labels"]["instance"] == "test"
+
+
+def test_create_compute_job_unset_instance_env_keeps_prod_size(monkeypatch):
+    fake_batch_v1 = MagicMock()
+    monkeypatch.setattr(jobs, "_batch_v1_client", lambda: fake_batch_v1)
+    monkeypatch.setenv("COMPUTE_IMAGE", "img")
+    monkeypatch.setenv("CALLBACK_BASE_URL", ENV["CALLBACK_BASE_URL"])
+    monkeypatch.setenv("CALLBACK_TOKEN", ENV["CALLBACK_TOKEN"])
+    for var in ("JOB_CPU", "JOB_MEMORY_REQUEST", "JOB_MEMORY_LIMIT", "XTB_NPROC", "INSTANCE"):
+        monkeypatch.delenv(var, raising=False)
+
+    jobs.create_compute_job(str(uuid.uuid4()), "c1ccccc1")
+
+    _, kwargs = fake_batch_v1.create_namespaced_job.call_args
+    container = kwargs["body"]["spec"]["template"]["spec"]["containers"][0]
+    assert container["resources"]["requests"]["cpu"] == "14"
+    assert container["resources"]["limits"]["memory"] == "16Gi"
+    assert {e["name"]: e["value"] for e in container["env"]}["XTB_NPROC"] == "14"
+    assert kwargs["body"]["metadata"]["labels"]["instance"] == "prod"
 
 
 def test_create_compute_job_no_in_cluster_config_short_circuits():

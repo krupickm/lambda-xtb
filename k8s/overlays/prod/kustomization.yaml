@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Production instance — the one that is live today.
+#
+# This overlay deliberately changes NOTHING but the target namespace: every
+# resource keeps the exact name it already has on the cluster, so that
+# `kubectl apply -k k8s/overlays/prod` ADOPTS the running objects instead of
+# creating a parallel set beside them. Any per-instance value that prod needs
+# is already baked into base/ (base == what prod runs), and the code defaults
+# in jobs.py (JOB_CPU=14, INSTANCE=prod) reproduce today's behaviour without
+# any env override here.
+#
+# Verify before applying:
+#   kubectl apply -k k8s/overlays/prod --dry-run=server -n krupicka-ns
+namespace: krupicka-ns
+
+resources:
+  - ../../base
