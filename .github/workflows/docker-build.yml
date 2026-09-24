@@ -1,11 +1,18 @@
 name: Build & Push Docker Image
 
-# Builds the single image both instances run and rolls it out to ONE of them.
+# Builds the single image both instances run, and rolls it out to at most one
+# of them. Nothing here builds or deploys from a red tree: the `checks` job
+# below is the CI workflow, and every other job needs it.
 #
-# A push to `main` deploys prod. Any other deploy is a manual dispatch, which
-# defaults to the test instance; asking for prod from a ref other than `main`
-# is refused outright (see "Resolve target instance") so that work in progress
-# on a feature branch can never roll the demo instance.
+# Three paths, and only one of them touches prod:
+#
+#   push tag v*     RELEASE. Builds cerit.io/krupickm/lambda-xtb:<tag>, moves
+#                   :latest onto it, and rolls out prod with the exact tag.
+#   push main       Builds :main and :<sha> and stops. Merging deploys nothing
+#                   — an image exists if you want it, that is all.
+#   workflow_dispatch  Builds :<sha> and rolls out the TEST instance, from any
+#                   ref. There is no manual prod path on purpose: prod moves by
+#                   tag or not at all.
 #
 # This workflow deliberately never runs `kubectl apply`. Manifests live in
 # k8s/overlays/{prod,test} and are applied by hand (see SERVICE_SPLIT.md,
@@ -15,6 +22,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       instance:
@@ -22,7 +31,6 @@ on:
         type: choice
         options:
           - test
-          - prod
         default: test
         required: true
 
@@ -32,46 +40,89 @@ env:
   NAMESPACE: krupicka-ns
 
 jobs:
+  checks:
+    name: checks
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
   build-and-push:
     runs-on: ubuntu-latest
+    needs: checks
 
     steps:
-      - name: Resolve target instance
+      - uses: actions/checkout@v4
+
+      - name: Resolve build mode
         id: target
         env:
-          INSTANCE: ${{ github.event_name == 'workflow_dispatch' && inputs.instance || 'prod' }}
-          REF: ${{ github.ref }}
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
-          if [ "$INSTANCE" = "prod" ] && [ "$REF" != "refs/heads/main" ]; then
-            echo "::error::Refusing to deploy instance=prod from $REF — prod deploys only from refs/heads/main."
-            exit 1
-          fi
+          deployment=""
 
-          # `:latest` is what an unpinned manifest pulls, so only a prod build
-          # is allowed to move it. Every build is addressable by :<sha>.
-          tags="${REGISTRY_IMAGE}:${SHA}"
-          if [ "$INSTANCE" = "prod" ]; then
+          if [ "$EVENT" = "push" ] && [ "$REF_TYPE" = "tag" ]; then
+            # A release is addressable forever by its tag; :latest is only a
+            # convenience alias and only a release is allowed to move it.
+            mode="release"
+            version="$REF_NAME"
+            image="${REGISTRY_IMAGE}:${version}"
+            tags="${image}"$'\n'"${REGISTRY_IMAGE}:latest"
             deployment="lambda-xtb"
-            tags="${REGISTRY_IMAGE}:latest"$'\n'"${tags}"
+          elif [ "$EVENT" = "push" ]; then
+            # main: build only. Nothing is deployed by merging.
+            mode="main"
+            version=""
+            image="${REGISTRY_IMAGE}:${SHA}"
+            tags="${image}"$'\n'"${REGISTRY_IMAGE}:main"
           else
+            mode="test"
+            version=""
+            image="${REGISTRY_IMAGE}:${SHA}"
+            tags="${image}"
             deployment="lambda-xtb-test"
           fi
 
           {
-            echo "instance=${INSTANCE}"
+            echo "mode=${mode}"
+            echo "version=${version}"
             echo "deployment=${deployment}"
-            echo "image=${REGISTRY_IMAGE}:${SHA}"
+            echo "image=${image}"
             echo "tags<<__TAGS__"
             echo "${tags}"
             echo "__TAGS__"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Deploying instance=${INSTANCE} to deployment/${deployment} from ${REF}" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$deployment" ]; then
+            echo "mode=${mode} — building ${image} and rolling out deployment/${deployment}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "mode=${mode} — building ${image}, no rollout" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-      - uses: actions/checkout@v4
+      # The manifests are the record of what prod runs, so a release tag and
+      # the tag pinned in k8s/base/deployment.yaml must agree. Catching the
+      # mismatch here is cheap; catching it after `kubectl apply -k` silently
+      # rolls prod back to an older image is not.
+      - name: Verify the manifest pins this release
+        if: steps.target.outputs.mode == 'release'
+        env:
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          expected="${REGISTRY_IMAGE}:${VERSION}"
+          found=$(grep -c -F -- "${expected}" k8s/base/deployment.yaml || true)
+
+          # Two references: the frontend container image and COMPUTE_IMAGE.
+          if [ "$found" -ne 2 ]; then
+            echo "::error::k8s/base/deployment.yaml references ${expected} ${found} time(s), expected 2."
+            echo "::error::Bump both the container image and COMPUTE_IMAGE, merge, then re-tag."
+            grep -n "${REGISTRY_IMAGE}" k8s/base/deployment.yaml || true
+            exit 1
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -94,9 +145,10 @@ jobs:
           tags: ${{ steps.target.outputs.tags }}
           platforms: linux/amd64
           build-args: |
-            BUILD_VERSION=${{ github.run_number }}
+            BUILD_VERSION=${{ steps.target.outputs.version || github.sha }}
 
       - name: Roll out to Kubernetes
+        if: steps.target.outputs.deployment != ''
         env:
           KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
           DEPLOYMENT: ${{ steps.target.outputs.deployment }}

@@ -21,8 +21,15 @@ spec:
           type: RuntimeDefault
       containers:
         - name: lambda-xtb
-          image: cerit.io/krupickm/lambda-xtb:latest
-          imagePullPolicy: Always
+          # Pinned to a release tag, never :latest — a λ value that ends up in
+          # a paper has to be traceable to an exact image, and a rollback is
+          # then just re-pinning the previous tag. Bump this AND COMPUTE_IMAGE
+          # below in the same commit, merge, then tag that commit: the release
+          # workflow refuses to build a tag the manifest does not pin
+          # (see .github/workflows/docker-build.yml). Do not `kubectl apply -k`
+          # a bump before its tag is built — the image does not exist yet.
+          image: cerit.io/krupickm/lambda-xtb:v1.2
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5000
           securityContext:
@@ -41,7 +48,9 @@ spec:
             - name: NAMESPACE
               value: "krupicka-ns"
             - name: COMPUTE_IMAGE
-              value: "cerit.io/krupickm/lambda-xtb:latest"
+              # Must equal the frontend image above; the release workflow
+              # checks that both point at the tag being released.
+              value: "cerit.io/krupickm/lambda-xtb:v1.2"
             - name: CALLBACK_BASE_URL
               value: "http://lambda-xtb-svc.krupicka-ns.svc.cluster.local"
             - name: CALLBACK_TOKEN

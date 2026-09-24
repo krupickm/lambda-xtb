@@ -65,12 +65,18 @@ kubectl cp krupicka-ns/<pod-name>:/app/data/lambda.db ./lambda.db
 
 ## CI/CD (GitHub Actions)
 
-Two workflows in `.github/workflows/`:
+Three workflows in `.github/workflows/`:
 
 | Workflow | Triggers | What it does |
 |----------|----------|--------------|
-| `docker-build.yml` | every push to `main` | builds app image, pushes `:latest` + `:<sha>`, updates k8s deployment to `:<sha>` |
+| `ci.yml` | every pull request; called before every build | `ruff check`, unit tests (xtb mocked), one real xtb calculation on ethylene |
+| `docker-build.yml` | push to `main`; push of a `v*` tag; manual dispatch | **tag** → builds `:<tag>` + `:latest` and rolls out prod; **main** → builds `:main` + `:<sha>`, deploys nothing; **dispatch** → builds `:<sha>` and rolls out the test instance |
 | `base-image.yml` | `environment.yml` or `Dockerfile.base` change, or manual dispatch | rebuilds `lambda-xtb-base:latest` |
+
+Merging to `main` deploys nothing — prod moves only when you push a version
+tag, and the manifests pin that exact tag rather than `:latest`. The full
+branch → PR → release workflow, including how to cut a release and how to roll
+one back, is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ### Required secrets
 
@@ -82,4 +88,5 @@ Two workflows in `.github/workflows/`:
 
 ## See also
 
-`DEVLOG.md` — architecture decisions, science background, known issues, open TODOs.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — branch/PR/release workflow, test markers, what CI runs.
+- `DEVLOG.md` — architecture decisions, science background, known issues, open TODOs.
