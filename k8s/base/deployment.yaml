@@ -52,9 +52,11 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/data
+          # The frontend only serves the UI/API and spawns Jobs — the heavy
+          # work happens in the compute Job, not here. 1 CPU, little memory.
           resources:
             requests:
-              cpu: "250m"
+              cpu: "1"
               memory: "256Mi"
             limits:
               cpu: "1"

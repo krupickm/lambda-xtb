@@ -17,7 +17,7 @@ The goal is **better infrastructure utilization** by splitting into two roles:
   runs `calculate_lambda()`, POSTs the result back to the frontend API, then exits.
 
 Net effect: 14-CPU burst capacity exists only during the ~1–2 min a calculation runs;
-the steady-state footprint drops to a ~250m-CPU frontend. Functionality (UI, 3D viewer,
+the steady-state footprint drops to a 1-CPU/512Mi frontend. Functionality (UI, 3D viewer,
 stats, reproducibility runs) is unchanged.
 
 ### Infrastructure findings (CERIT-SC)
@@ -26,7 +26,7 @@ stats, reproducibility runs) is unchanged.
   drop ALL caps, seccomp RuntimeDefault). Batch **Jobs are supported**
   (https://docs.cerit-sc.cz/en/docs/kubernetes/job).
 - **No Knative / KEDA** is documented → literal scale-to-zero isn't natively available.
-  **Decision: minimal always-on frontend** (1 replica, ~250m CPU) instead of true 0.
+  **Decision: minimal always-on frontend** (1 replica, 1 CPU / 512Mi) instead of true 0.
 - Creating Jobs from inside the frontend pod is done via the Kubernetes API using a
   **ServiceAccount + Role/RoleBinding** scoped to `krupicka-ns` (we own the namespace).
 
@@ -248,10 +248,15 @@ the instance being demoed.
 | Deployment / Service | `lambda-xtb` / `lambda-xtb-svc` | `lambda-xtb-test` / `lambda-xtb-svc-test` |
 | PVC (its own SQLite) | `lambda-xtb-data` | `lambda-xtb-data-test` |
 | Callback token Secret | `lambda-xtb-callback` | `lambda-xtb-callback-test` |
-| Compute Job size | 14 CPU / 4–16Gi | 2 CPU / 2–4Gi (`JOB_CPU`, `JOB_MEMORY_*`) |
+| Compute Job size | 14 CPU / 4–16Gi | 14 CPU / 4–16Gi — same as prod |
 | Spawned Jobs labelled | `instance=prod` | `instance=test` |
 | Rollout strategy | RollingUpdate (legacy) | `Recreate` |
 | Gets `:latest` | yes | no — `:<sha>` only |
+
+The test instance is deliberately **full-power**: its Jobs are the same 14 CPU as prod's, so a
+run there reproduces prod's timings and thread behaviour instead of a scaled-down
+approximation. The cost is that two concurrent calculations, one per instance, need 28 CPU of
+namespace quota — set `JOB_CPU`/`JOB_MEMORY_*` on the test overlay if that ever gets tight.
 
 They cannot interfere: compute Jobs mount only an `emptyDir` scratch and never a PVC
 (results travel back by HTTP callback), Job names carry a uuid4, and `reconcile()` reads
@@ -316,7 +321,7 @@ re-run the workflow for that instance after any apply.
 3. Submit via `https://lambda-xtb.dyn.cloud.e-infra.cz`; watch `kubectl get jobs,pods -w`.
 4. Confirm the compute pod is scheduled with **14 CPU** (`kubectl describe pod <job-pod>`),
    the result lands in SQLite, the Job auto-deletes after `ttlSecondsAfterFinished`, and
-   the frontend pod stays at ~250m CPU idle.
+   and the frontend pod idles well under its 1-CPU request.
 5. `kubectl logs job/<name>` on failure paths; verify Bearer-token rejection of
    unauthenticated callbacks.
 

@@ -24,12 +24,8 @@ spec:
             # while both instances share a namespace.
             - name: INSTANCE
               value: "test"
-            # Small Jobs: the test instance exercises the split, it does not
-            # need prod's 14 CPUs, and it must not eat prod's quota headroom.
-            # XTB_NPROC follows JOB_CPU automatically.
-            - name: JOB_CPU
-              value: "2"
-            - name: JOB_MEMORY_REQUEST
-              value: "2Gi"
-            - name: JOB_MEMORY_LIMIT
-              value: "4Gi"
+            # Job size is deliberately NOT overridden here: test runs the same
+            # full-power 14-CPU Jobs as prod (jobs.py defaults), so a run here
+            # reproduces prod's timings and thread behaviour rather than a
+            # scaled-down approximation. Override JOB_CPU / JOB_MEMORY_REQUEST
+            # / JOB_MEMORY_LIMIT if the namespace quota ever needs the room.
