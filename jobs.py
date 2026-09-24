@@ -89,6 +89,10 @@ def build_job_spec(job_uuid: str, smiles: str, image: str, env: dict[str, str]) 
         {"name": "CALLBACK_BASE_URL", "value": env["CALLBACK_BASE_URL"]},
         {"name": "CALLBACK_TOKEN", "value": env["CALLBACK_TOKEN"]},
         {"name": "XTB_NPROC", "value": nproc},
+        # calculate_lambda() prints a [1/5]..[5/5] progress log, but Python
+        # block-buffers stdout into a pipe — without this `kubectl logs -f`
+        # on the compute pod shows nothing until the process exits.
+        {"name": "PYTHONUNBUFFERED", "value": "1"},
     ]
 
     return {

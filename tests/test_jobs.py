@@ -81,6 +81,16 @@ def test_build_job_spec_env_vars():
     assert env_by_name["XTB_NPROC"] == "14"
 
 
+def test_build_job_spec_unbuffered_stdout():
+    """Progress output must reach `kubectl logs -f` while the job runs,
+    not sit in a pipe buffer until the process exits."""
+    manifest = jobs.build_job_spec(str(uuid.uuid4()), "CCO", "img", ENV)
+    container = manifest["spec"]["template"]["spec"]["containers"][0]
+    env_by_name = {e["name"]: e["value"] for e in container["env"]}
+
+    assert env_by_name["PYTHONUNBUFFERED"] == "1"
+
+
 def test_build_job_spec_empty_dir_mounted_at_tmp():
     manifest = jobs.build_job_spec(str(uuid.uuid4()), "c1ccccc1", "img", ENV)
     pod_spec = manifest["spec"]["template"]["spec"]
