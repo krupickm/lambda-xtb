@@ -13,13 +13,12 @@ import os
 import statistics
 import uuid
 
-from flask import Flask, jsonify, render_template, request, redirect, url_for, flash
+from flask import Flask, flash, jsonify, redirect, render_template, request, url_for
 from rdkit import Chem
 
 import db as _db
 import jobs as _jobs
 from db import JobStatus
-
 
 app = Flask(__name__)
 app.secret_key = "replace-me-with-a-random-secret"  # only needed for flash messages

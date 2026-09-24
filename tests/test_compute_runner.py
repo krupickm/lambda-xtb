@@ -208,7 +208,7 @@ def test_timestamp_prefixes_each_line():
     lines = written.splitlines()
 
     assert len(lines) == 2
-    for line, tail in zip(lines, ("[1/5] starting", "[2/5] next")):
+    for line, tail in zip(lines, ("[1/5] starting", "[2/5] next"), strict=True):
         assert re.match(_STAMP, line), line
         assert line.endswith(tail)
 

@@ -36,16 +36,17 @@ Usage
     python lambda_xtb.py "c1ccc2ccccc2c1"       # naphthalene from SMILES arg
 """
 
+import json
 import os
+import pprint
 import shutil
 import sys
 import tempfile
-import numpy as np
-import pprint
-import json
 from concurrent.futures import ThreadPoolExecutor
+
 import easyxtb
 from easyxtb.calc import XTB as _XTB_PROGRAM
+
 
 def _xtb_nproc_from_env() -> int:
     """
@@ -103,7 +104,10 @@ def ase_to_easyxtb(atoms, charge: int, uhf: int):
     from easyxtb.geometry import Atom as XAtom
 
     return XGeometry(
-        [XAtom(sym, *pos) for sym, pos in zip(atoms.get_chemical_symbols(), atoms.get_positions())],
+        [
+            XAtom(sym, *pos)
+            for sym, pos in zip(atoms.get_chemical_symbols(), atoms.get_positions(), strict=True)
+        ],
         charge=charge, spin=uhf
     )
 
@@ -127,9 +131,9 @@ def smiles_to_atoms(smiles: str):
     Returns (ASE Atoms, RDKit mol-with-Hs) so callers can inspect the molecule.
     Positions in Angstrom, no periodic boundary conditions.
     """
+    from ase import Atoms
     from rdkit import Chem
     from rdkit.Chem import AllChem
-    from ase import Atoms
 
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -316,8 +320,9 @@ def save_results(results: dict, smiles: str, path: str = "lambda_results.json"):
 
 def atoms_to_xyz(atoms):
     """Return an XYZ-formatted string for an ASE Atoms object."""
-    from ase.io import write
     import io
+
+    from ase.io import write
 
     buf = io.StringIO()
     write(buf, atoms, format="xyz")
@@ -405,7 +410,7 @@ def calculate_lambda(smiles: str) -> dict:
 
     # ── report ───────────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print(f"  Results")
+    print("  Results")
     print(f"{'='*60}")
     print(f"  λ⁺  (hole)     = {lam_plus_ev*1000:8.1f} meV  ({lam_plus_ev:.4f} eV)")
     print(f"    λ₁⁺           = {lam1_plus*EH_TO_EV*1000:8.1f} meV  (cation relaxation)")

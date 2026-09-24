@@ -17,7 +17,6 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from enum import IntEnum
 
-
 # ── status enum ───────────────────────────────────────────────────────────────
 
 class JobStatus(IntEnum):
