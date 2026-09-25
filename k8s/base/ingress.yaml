@@ -28,6 +28,12 @@ metadata:
     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth?allowed_email_domains=vscht.cz"
     nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start"
     nginx.ingress.kubernetes.io/auth-signin-redirect-param: "rd"
+    # Forwards the authenticated identity to the app, IF the shared
+    # oauth2-proxy is configured to set it (its --set-xauthrequest flag,
+    # oauth2-proxy/oauthproxy.go) - not something this repo controls. Harmless
+    # no-op otherwise: app.py falls back to leaving the field blank. See
+    # index()'s use of X-Auth-Request-Email in app.py.
+    nginx.ingress.kubernetes.io/auth-response-headers: "X-Auth-Request-Email"
 spec:
   ingressClassName: nginx
   tls:

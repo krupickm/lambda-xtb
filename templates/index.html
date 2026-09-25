@@ -31,7 +31,7 @@
         <input id="smiles" name="smiles" type="text" placeholder="c1ccc2ccccc2c1" required />
 
         <label for="email" style="margin-top: 0.9rem;">Email (optional)</label>
-        <input id="email" name="email" type="email" placeholder="you@example.com" />
+        <input id="email" name="email" type="email" placeholder="you@example.com" value="{{ auth_email or '' }}" />
 
         <button id="submitButton" type="submit">Calculate λ</button>
       </form>
