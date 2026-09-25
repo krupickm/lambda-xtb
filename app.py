@@ -190,7 +190,16 @@ def index():
     error = request.args.get("error")
     if error:
         flash(error)
-    return render_template("index.html")
+    # Set only behind e-infra SSO, by the auth-response-headers annotation on
+    # the ingress forwarding oauth2-proxy's identity header through. It's
+    # GAP-Auth, not the more common X-Auth-Request-Email - this shared
+    # oauth2-proxy instance doesn't have --set-xauthrequest enabled, only its
+    # legacy always-on header (confirmed by hitting /oauth2/auth directly from
+    # an authenticated session). Absent everywhere else (local dev,
+    # off-cluster, no SSO) - the field is just blank there, same as before
+    # this existed.
+    auth_email = request.headers.get("GAP-Auth", "")
+    return render_template("index.html", auth_email=auth_email)
 
 
 @app.route("/calculate", methods=["POST"])

@@ -219,3 +219,15 @@ def test_index_page_has_email_field(client):
     resp = client.get("/")
     assert resp.status_code == 200
     assert b'name="email"' in resp.data
+
+
+def test_index_page_prefills_email_from_auth_header(client):
+    resp = client.get("/", headers={"GAP-Auth": "user@vscht.cz"})
+    assert resp.status_code == 200
+    assert b'value="user@vscht.cz"' in resp.data
+
+
+def test_index_page_email_field_blank_without_auth_header(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert b'value=""' in resp.data

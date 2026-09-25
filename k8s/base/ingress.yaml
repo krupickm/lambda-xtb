@@ -5,6 +5,42 @@ metadata:
   annotations:
     kubernetes.io/tls-acme: "true"
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # e-infra SSO (BETA, see docs.cerit.io/en/docs/kubernetes/security): requires
+    # a valid e-infra AAI login before nginx proxies the request. Both auth-url
+    # and auth-signin are checked against the same character allowlist
+    # (URLWithNginxVariableRegex, kubernetes/ingress-nginx
+    # internal/ingress/annotations/parser/validators.go) that excludes "@" and
+    # "%" entirely:
+    #  - auth-url: CERIT's docs example (allowed_emails=user@domain) cannot
+    #    pass it. oauth2-proxy's authOnlyAuthorize() (oauthproxy.go) runs
+    #    three independent, ANDed constraints - allowed_groups /
+    #    allowed_email_domains / allowed_emails - and each one is a no-op
+    #    when its own query param is absent, so admitting *any* authenticated
+    #    e-infra identity (not a fixed allowlist) is just omitting all three,
+    #    no @ involved. Earlier testing of that got a hard 401, but that was
+    #    before auth-signin was fixed below (the login redirect never
+    #    completed, so that test never actually exercised this path) -
+    #    revisit if it turns out not to hold up now that login works.
+    #  - auth-signin: CERIT's docs example hand-encodes the redirect target as
+    #    "...?rd=$scheme%3A%2F%2F$host...", which also fails the regex — this
+    #    isn't caught at apply time (this annotation isn't covered by the
+    #    admission webhook here), but the controller's own reconcile-time
+    #    parser rejects it the same way, silently disabling the redirect (nginx
+    #    then serves its own bare 401 instead of bouncing to login). Omitting
+    #    the query string entirely avoids the problem: ingress-nginx's
+    #    buildAuthSignURL() appends "?rd=<escaped-uri>" itself at config-render
+    #    time using nginx variables, never touching the annotation string.
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start"
+    nginx.ingress.kubernetes.io/auth-signin-redirect-param: "rd"
+    # Forwards the authenticated identity to the app. Confirmed by hitting
+    # /oauth2/auth directly from an authenticated browser session: this
+    # shared oauth2-proxy sets GAP-Auth (its legacy, always-on header from
+    # addHeadersForProxying() in oauthproxy.go - set whenever the session has
+    # an email, unconditionally) but NOT X-Auth-Request-Email, which needs
+    # --set-xauthrequest enabled server-side and isn't here. See index()'s
+    # use of GAP-Auth in app.py.
+    nginx.ingress.kubernetes.io/auth-response-headers: "GAP-Auth"
 spec:
   ingressClassName: nginx
   tls:

@@ -1,0 +1,29 @@
+# Second Ingress required by e-infra SSO: exposes the oauth2-proxy's own
+# /oauth2 callback path on the same host/cert as the main ingress, so the
+# auth-url/auth-signin annotations on ingress.yaml have somewhere to redirect
+# to. Host and tls here must stay identical to ingress.yaml; the test overlay
+# patches both together for exactly that reason.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lambda-xtb-oauth-ingress
+  annotations:
+    kubernetes.io/tls-acme: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - "lambda-xtb.dyn.cloud.e-infra.cz"
+      secretName: lambda-xtb-dyn-cloud-e-infra-cz-tls
+  rules:
+    - host: "lambda-xtb.dyn.cloud.e-infra.cz"
+      http:
+        paths:
+          - path: /oauth2
+            pathType: Prefix
+            backend:
+              service:
+                name: lambda-xtb-oauth-svc
+                port:
+                  number: 4180

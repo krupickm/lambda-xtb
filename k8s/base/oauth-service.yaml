@@ -1,0 +1,15 @@
+# Routes the /oauth2 path (see oauth-ingress.yaml) to CERIT-SC's shared
+# oauth2-proxy, which backs the e-infra SSO annotations on ingress.yaml.
+# Same target for every instance; nameSuffix (test overlay) still gives each
+# instance its own Service object, matching how the rest of base/ is shared.
+apiVersion: v1
+kind: Service
+metadata:
+  name: lambda-xtb-oauth-svc
+spec:
+  type: ExternalName
+  externalName: oauth2-proxy.kube-system.svc.cluster.local
+  ports:
+    - name: http
+      port: 4180
+      protocol: TCP
