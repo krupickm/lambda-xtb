@@ -12,3 +12,5 @@ resources:
   - service.yaml
   - deployment.yaml
   - ingress.yaml
+  - oauth-service.yaml
+  - oauth-ingress.yaml

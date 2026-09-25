@@ -56,3 +56,16 @@ patches:
       - op: replace
         path: /spec/rules/0/host
         value: lambda-xtb-test.dyn.cloud.e-infra.cz
+  - target:
+      kind: Ingress
+      name: lambda-xtb-oauth-ingress
+    patch: |-
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: lambda-xtb-test.dyn.cloud.e-infra.cz
+      - op: replace
+        path: /spec/tls/0/secretName
+        value: lambda-xtb-test-dyn-cloud-e-infra-cz-tls
+      - op: replace
+        path: /spec/rules/0/host
+        value: lambda-xtb-test.dyn.cloud.e-infra.cz

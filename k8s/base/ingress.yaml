@@ -5,6 +5,16 @@ metadata:
   annotations:
     kubernetes.io/tls-acme: "true"
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # e-infra SSO (BETA, see docs.cerit.io/en/docs/kubernetes/security): requires
+    # a valid e-infra AAI login before nginx proxies the request. CERIT's own
+    # example always pins auth-url to an explicit allowed_emails=... list; we
+    # deliberately omit that query param to allow *any* authenticated e-infra
+    # identity rather than a fixed set of collaborators. This is undocumented
+    # behavior of the shared oauth2-proxy — verify after applying that it
+    # actually admits any authenticated user rather than denying everyone; if
+    # it denies, fall back to an explicit allowed_emails list.
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$scheme%3A%2F%2F$host$escaped_request_uri"
 spec:
   ingressClassName: nginx
   tls:
