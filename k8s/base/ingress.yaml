@@ -28,12 +28,14 @@ metadata:
     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth?allowed_email_domains=vscht.cz"
     nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start"
     nginx.ingress.kubernetes.io/auth-signin-redirect-param: "rd"
-    # Forwards the authenticated identity to the app, IF the shared
-    # oauth2-proxy is configured to set it (its --set-xauthrequest flag,
-    # oauth2-proxy/oauthproxy.go) - not something this repo controls. Harmless
-    # no-op otherwise: app.py falls back to leaving the field blank. See
-    # index()'s use of X-Auth-Request-Email in app.py.
-    nginx.ingress.kubernetes.io/auth-response-headers: "X-Auth-Request-Email"
+    # Forwards the authenticated identity to the app. Confirmed by hitting
+    # /oauth2/auth directly from an authenticated browser session: this
+    # shared oauth2-proxy sets GAP-Auth (its legacy, always-on header from
+    # addHeadersForProxying() in oauthproxy.go - set whenever the session has
+    # an email, unconditionally) but NOT X-Auth-Request-Email, which needs
+    # --set-xauthrequest enabled server-side and isn't here. See index()'s
+    # use of GAP-Auth in app.py.
+    nginx.ingress.kubernetes.io/auth-response-headers: "GAP-Auth"
 spec:
   ingressClassName: nginx
   tls:
