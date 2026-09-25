@@ -28,7 +28,7 @@ spec:
           # workflow refuses to build a tag the manifest does not pin
           # (see .github/workflows/docker-build.yml). Do not `kubectl apply -k`
           # a bump before its tag is built — the image does not exist yet.
-          image: cerit.io/krupickm/lambda-xtb:v1.2
+          image: cerit.io/krupickm/lambda-xtb:v1.3
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5000
@@ -50,7 +50,7 @@ spec:
             - name: COMPUTE_IMAGE
               # Must equal the frontend image above; the release workflow
               # checks that both point at the tag being released.
-              value: "cerit.io/krupickm/lambda-xtb:v1.2"
+              value: "cerit.io/krupickm/lambda-xtb:v1.3"
             - name: CALLBACK_BASE_URL
               value: "http://lambda-xtb-svc.krupicka-ns.svc.cluster.local"
             - name: CALLBACK_TOKEN
