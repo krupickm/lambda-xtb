@@ -244,7 +244,8 @@ def pending(job_uuid):
         flash("Result not found.")
         return redirect(url_for("index"))
 
-    return render_template("pending.html", job_uuid=job_uuid)
+    pending_url = url_for("pending", job_uuid=job_uuid, _external=True)
+    return render_template("pending.html", job_uuid=job_uuid, pending_url=pending_url)
 
 
 @app.route("/stats/<job_uuid>")

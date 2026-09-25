@@ -152,6 +152,8 @@ def test_pending_page_renders_for_a_pending_job(db, client):
     assert resp.status_code == 200
     # The page's JS must poll the same status endpoint the API contract defines.
     assert f"/api/jobs/{job_uuid}/status".encode() in resp.data
+    # The link must be copyable from the page body, not just the URL bar.
+    assert f"/pending/{job_uuid}".encode() in resp.data
 
 
 def test_pending_page_unknown_uuid_redirects_to_index(db, client):
