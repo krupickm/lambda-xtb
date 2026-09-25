@@ -1,11 +1,11 @@
 #!/bin/sh
 # Refuse to push straight to main.
 #
-# GitHub cannot enforce this for us: lambda-xtb is a private repo on a Free
-# plan, where branch protection and rulesets are unavailable ("Upgrade to
-# GitHub Pro or make this repository public"). Until that changes, this hook
-# is the whole enforcement story — it is client-side and therefore advisory,
-# but it turns "push to main" from a reflex into a deliberate act.
+# GitHub isn't enforcing this for us (yet): real branch protection/rulesets are
+# available now that lambda-xtb is public, but none has been turned on. Until
+# that happens, this hook is the whole enforcement story — it is client-side
+# and therefore advisory, but it turns "push to main" from a reflex into a
+# deliberate act.
 #
 # Enable once per clone:
 #

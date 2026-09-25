@@ -1,14 +1,54 @@
 # λ-xTB Reorganization Energy Calculator
 
-Flask web service that computes intramolecular reorganization energy (λ⁺/λ⁻) using the **Nelsen four-point method** at GFN2-xTB level. Takes a SMILES string, runs a CREST conformer search + 3 optimizations + 4 single-points, and returns λ⁺ (hole) and λ⁻ (electron) in meV. Every run is stored; the stats page shows mean ± std across repeated submissions.
+Give it a molecule as a [SMILES](https://en.wikipedia.org/wiki/Simplified_Molecular_Input_Line_Entry_System)
+string, and it hands back **λ⁺** and **λ⁻**: the *intramolecular reorganization energy*
+that governs how well that molecule conducts holes and electrons — a key design number for
+OLED and organic-semiconductor (OSC) materials. Under the hood it runs the **Nelsen
+four-point method** (three geometry optimizations, four single-point energies) at the
+**GFN2-xTB** semiempirical level — a full run finishes in few minutes, where the
+same seven-calculation recipe at full DFT would take hours. Every submission is stored, so
+repeated runs on the same molecule build up a mean ± standard deviation instead of a
+single, unverifiable number.
 
-The service is **split in two**: a small always-on frontend (UI + internal API + SQLite on
-a PVC) spawns **one 14-CPU Kubernetes Job per calculation**. The worker is
-fire-and-forget — it POSTs `start`/`result`/`error` back to the frontend and exits.
-Architecture and the authoritative API contract are in
-[`SERVICE_SPLIT.md`](SERVICE_SPLIT.md).
+**Live:**
+https://lambda-xtb.dyn.cloud.e-infra.cz
 
-Two independent instances run side by side in `krupicka-ns`, from the **same image**:
+
+> Gated behind **e-infra AAI single sign-on** — you need an academic identity to log in. 
+
+Try naphthalene (`c1ccc2ccccc2c1`, λ⁺ ≈ 190 meV) or see more
+[demo molecules](DEVLOG.md#demo-molecules-for-testing).
+
+## The engineering, in one paragraph
+
+λ-xTB started as a single Flask pod that ran every ~60–120 s calculation **synchronously
+inside the HTTP request**: one calculation at a time for everyone, on a 4-CPU pod that sat
+idle almost all day for the rare moment someone actually submitted a molecule. It is now
+**split into two roles that scale independently**: a tiny **always-on frontend** (UI +
+internal API + SQLite, ~1 CPU) that, for every submission, **spawns a dedicated 14-CPU
+Kubernetes Job** to do the actual xTB/CREST work and then disappears. The worker exposes no
+API of its own — it's fire-and-forget: it POSTs its own state (`start` / `result` /
+`error`) back to the frontend and exits.
+
+```
+Browser ──POST /calculate──▶ Frontend (1 CPU, always on)
+                                │  writes a PENDING row to SQLite
+                                │  spawns a Kubernetes Job ─────────┐
+         ◀──redirect /pending/<uuid>──┘                             │
+                                                                     ▼
+                                                    Compute Job (14 CPU, one per calculation)
+Frontend ◀──POST /api/jobs/<uuid>/result── runs calculate_lambda(), POSTs its result, exits
+   (poll sees DONE) ──▶ redirect to /stats/<uuid>
+```
+
+The full design — and the production bugs it took to get right — is in
+[`SERVICE_SPLIT.md`](SERVICE_SPLIT.md). The "how we got here" story, including using AI
+coding agents under a strict human-review gate to implement the split one reviewable piece
+at a time, is in [`DEVLOG.md`](DEVLOG.md#the-service-split-and-building-it-with-agents).
+
+Two independent instances run side by side in `krupicka-ns`, from the **same image** —
+so a change can be tried end-to-end on `test` without ever touching the instance in front
+of real users:
 
 | | prod | test |
 |---|---|---|
@@ -19,7 +59,11 @@ Two independent instances run side by side in `krupicka-ns`, from the **same ima
 | Callback-token Secret | `lambda-xtb-callback` | `lambda-xtb-callback-test` |
 | Moves when | a `v*` tag is pushed | the workflow is dispatched manually |
 
-> This README is for **developers and operators**. It is not user documentation.
+---
+
+Everything below this line is **operational documentation** — for developers and for
+whoever is running the cluster deployment. Curious what the code actually does, or the
+chemistry behind it? [`DEVLOG.md`](DEVLOG.md) is the better next stop.
 
 ## Development
 
@@ -310,4 +354,4 @@ Nothing is built or deployed from a red tree: every build job depends on `ci.yml
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — branch/PR workflow, test markers, what CI runs.
 - [`SERVICE_SPLIT.md`](SERVICE_SPLIT.md) — architecture, the API contract, job state machine.
 - [`docs/OBSERVING_A_RUN.md`](docs/OBSERVING_A_RUN.md) — watching one calculation end to end.
-- `DEVLOG.md` — architecture decisions, science background, known issues, open TODOs.
+- [`DEVLOG.md`](DEVLOG.md) — architecture decisions, science background, known issues, open TODOs.

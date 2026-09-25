@@ -36,20 +36,15 @@ change.
 
 ### Enforcement, and the gap in it
 
-`lambda-xtb` is private on a GitHub Free plan, where branch protection and
-rulesets are simply not offered:
+`lambda-xtb` is now **public**, so GitHub's real branch protection / rulesets are
+available (`gh api repos/krupickm/lambda-xtb/rulesets` returns `[]` — an empty
+list, not the "upgrade to Pro" error a private Free-plan repo gets) — but nothing
+has been turned on yet. Today, nothing server-side stops a merge over a red build.
+The `.githooks/pre-push` hook is the whole enforcement story — client-side, and
+bypassable with `--no-verify`, which is the point: it makes pushing to `main` a
+decision rather than a reflex.
 
-```
-$ gh api repos/krupickm/lambda-xtb/rulesets
-Upgrade to GitHub Pro or make this repository public to enable this feature.
-```
-
-So nothing server-side stops a merge over a red build. The `.githooks/pre-push`
-hook is the whole enforcement story for now — client-side, and bypassable with
-`--no-verify`, which is the point: it makes pushing to `main` a decision rather
-than a reflex.
-
-**When the repo goes public or onto Pro**, turn on the real thing —
+**Turning on the real thing** (now possible, not yet done) —
 Settings → Branches → Add rule for `main`:
 
 - Require a pull request before merging
@@ -57,7 +52,7 @@ Settings → Branches → Add rule for `main`:
 - Require branches to be up to date before merging
 - Do not allow bypassing the above settings
 
-At that point the hook becomes a redundant convenience, not the safety net.
+Once that's on, the hook becomes a redundant convenience, not the safety net.
 
 ---
 
