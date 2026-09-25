@@ -12,10 +12,15 @@ metadata:
     # internal/ingress/annotations/parser/validators.go) that excludes "@" and
     # "%" entirely:
     #  - auth-url: CERIT's docs example (allowed_emails=user@domain) cannot
-    #    pass it, so use oauth2-proxy's allowed_email_domains instead
-    #    (oauthproxy.go) — allowed_groups / allowed_email_domains /
-    #    allowed_emails are three independent, ANDed, opt-in constraints. Add
-    #    more comma-separated academic domains as collaborators need access.
+    #    pass it. oauth2-proxy's authOnlyAuthorize() (oauthproxy.go) runs
+    #    three independent, ANDed constraints - allowed_groups /
+    #    allowed_email_domains / allowed_emails - and each one is a no-op
+    #    when its own query param is absent, so admitting *any* authenticated
+    #    e-infra identity (not a fixed allowlist) is just omitting all three,
+    #    no @ involved. Earlier testing of that got a hard 401, but that was
+    #    before auth-signin was fixed below (the login redirect never
+    #    completed, so that test never actually exercised this path) -
+    #    revisit if it turns out not to hold up now that login works.
     #  - auth-signin: CERIT's docs example hand-encodes the redirect target as
     #    "...?rd=$scheme%3A%2F%2F$host...", which also fails the regex — this
     #    isn't caught at apply time (this annotation isn't covered by the
@@ -25,7 +30,7 @@ metadata:
     #    the query string entirely avoids the problem: ingress-nginx's
     #    buildAuthSignURL() appends "?rd=<escaped-uri>" itself at config-render
     #    time using nginx variables, never touching the annotation string.
-    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth?allowed_email_domains=vscht.cz"
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
     nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start"
     nginx.ingress.kubernetes.io/auth-signin-redirect-param: "rd"
     # Forwards the authenticated identity to the app. Confirmed by hitting
