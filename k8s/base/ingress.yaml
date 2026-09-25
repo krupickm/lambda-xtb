@@ -6,12 +6,19 @@ metadata:
     kubernetes.io/tls-acme: "true"
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
     # e-infra SSO (BETA, see docs.cerit.io/en/docs/kubernetes/security): requires
-    # a valid e-infra AAI login before nginx proxies the request. Omitting
-    # allowed_emails to admit any authenticated e-infra identity was tried and
-    # got a hard 401 from oauth2-proxy — this deployment's shared proxy
-    # requires the query param, so pin it to an explicit allowlist instead.
-    # Add teammates' e-infra emails here as needed.
-    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth?allowed_emails=krupickm@vscht.cz"
+    # a valid e-infra AAI login before nginx proxies the request. CERIT's docs
+    # example (allowed_emails=user@domain) cannot pass this cluster's
+    # ingress-nginx annotation-validation admission webhook: auth-url is
+    # checked against a character allowlist (see
+    # internal/ingress/annotations/parser/validators.go,
+    # URLWithNginxVariableRegex, in kubernetes/ingress-nginx) that excludes
+    # "@" entirely, so no bare email address can appear here. oauth2-proxy's
+    # own auth-only handler (oauthproxy.go) supports allowed_email_domains as
+    # an equivalent, @-free alternative — allowed_groups / allowed_email_domains
+    # / allowed_emails are three independent, ANDed constraints, each a no-op
+    # when its own query param is absent. Add more comma-separated academic
+    # domains here as collaborators need access.
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth?allowed_email_domains=vscht.cz"
     nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$scheme%3A%2F%2F$host$escaped_request_uri"
 spec:
   ingressClassName: nginx
