@@ -36,20 +36,15 @@ change.
 
 ### Enforcement, and the gap in it
 
-`lambda-xtb` is private on a GitHub Free plan, where branch protection and
-rulesets are simply not offered:
+`lambda-xtb` is now **public**, so GitHub's real branch protection / rulesets are
+available (`gh api repos/krupickm/lambda-xtb/rulesets` returns `[]` — an empty
+list, not the "upgrade to Pro" error a private Free-plan repo gets) — but nothing
+has been turned on yet. Today, nothing server-side stops a merge over a red build.
+The `.githooks/pre-push` hook is the whole enforcement story — client-side, and
+bypassable with `--no-verify`, which is the point: it makes pushing to `main` a
+decision rather than a reflex.
 
-```
-$ gh api repos/krupickm/lambda-xtb/rulesets
-Upgrade to GitHub Pro or make this repository public to enable this feature.
-```
-
-So nothing server-side stops a merge over a red build. The `.githooks/pre-push`
-hook is the whole enforcement story for now — client-side, and bypassable with
-`--no-verify`, which is the point: it makes pushing to `main` a decision rather
-than a reflex.
-
-**When the repo goes public or onto Pro**, turn on the real thing —
+**Turning on the real thing** (now possible, not yet done) —
 Settings → Branches → Add rule for `main`:
 
 - Require a pull request before merging
@@ -57,7 +52,7 @@ Settings → Branches → Add rule for `main`:
 - Require branches to be up to date before merging
 - Do not allow bypassing the above settings
 
-At that point the hook becomes a redundant convenience, not the safety net.
+Once that's on, the hook becomes a redundant convenience, not the safety net.
 
 ---
 
@@ -99,51 +94,26 @@ flexible is an order of magnitude slower.
 ## Releasing
 
 Merging to `main` **deploys nothing**. It builds `:main` and `:<sha>` so an
-image exists if you want one, and stops there.
+image exists if you want one, and stops there. A release is a **tag**, and the
+tag is the only thing that moves prod.
 
-A release is a tag, and the tag is the only thing that moves prod:
-
-```bash
-# 1. Bump both image references to the version you are about to cut.
-sed -i 's|lambda-xtb:v1\.1|lambda-xtb:v1.2|g' k8s/base/deployment.yaml
-git checkout -b release-v1.2 && git commit -am "Release v1.2" && gh pr create --fill
-# 2. Merge it (CI green), then tag that commit:
-git checkout main && git pull
-git tag v1.2 && git push origin v1.2
-```
-
-The tag push builds `cerit.io/krupickm/lambda-xtb:v1.2`, moves `:latest` onto
-it, and rolls out prod with the exact tag.
-
-Order matters, and the workflow enforces half of it: a release refuses to build
-unless `k8s/base/deployment.yaml` already pins the tag being released, in both
-places (the container image and `COMPUTE_IMAGE`). The half it cannot enforce:
-**do not `kubectl apply -k k8s/overlays/prod` for a bump whose tag has not been
-built yet** — the image does not exist and the pod will sit in
-`ImagePullBackOff`.
-
-### Trying something on the test instance
-
-Any branch, no tag, no PR needed:
-
-```
-Actions → Build & Push Docker Image → Run workflow → instance: test
-```
-
-Builds `:<sha>` and rolls out `lambda-xtb-test`. There is deliberately **no**
-manual prod option: prod moves by tag or not at all.
-
-### Rolling back
+The code-side half, which is all that happens in this repo:
 
 ```bash
-kubectl set image deployment/lambda-xtb \
-  lambda-xtb=cerit.io/krupickm/lambda-xtb:v1.1 -n krupicka-ns
-kubectl set env deployment/lambda-xtb \
-  COMPUTE_IMAGE=cerit.io/krupickm/lambda-xtb:v1.1 -n krupicka-ns
+# Bump BOTH image references in k8s/base/deployment.yaml (the container image
+# and COMPUTE_IMAGE) to the version you are about to cut, in one PR.
+git checkout -b release-v1.3 && git commit -am "Release v1.3" && gh pr create --fill
+# Merge it with CI green, then tag that commit:
+git checkout main && git pull && git tag v1.3 && git push origin v1.3
 ```
 
-Then bump `k8s/base/deployment.yaml` back to match, so the manifest stays an
-honest record of what is running.
+A release **refuses to build** unless the manifest already pins the tag being
+released, in both places — so the bump PR always lands first.
+
+The cluster-side half — what the tag rollout does and does not carry, when you
+additionally have to `kubectl apply -k`, how to put a branch on the test
+instance, and how to roll back — lives with the rest of the operational
+documentation in [`README.md`](README.md#releasing-a-new-version).
 
 ---
 

@@ -65,10 +65,10 @@ spec:
           # work happens in the compute Job, not here. 1 CPU, little memory.
           resources:
             requests:
-              cpu: "1"
+              cpu: "250m"
               memory: "256Mi"
             limits:
-              cpu: "1"
+              cpu: "500m"
               memory: "512Mi"
       volumes:
         - name: data

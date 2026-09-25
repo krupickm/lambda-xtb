@@ -1,8 +1,17 @@
 # λ-xTB: Reorganization Energy Calculator — Project Devlog
 
-> **Status**: v1.1 live at `lambda-xtb.dyn.cloud.e-infra.cz` — parallel xtb execution, multi-run statistics, shareable URLs, CI/CD on CERIT-SC k8s.
+> **Status**: live at `lambda-xtb.dyn.cloud.e-infra.cz`, split into an always-on frontend
+> plus per-calculation 14-CPU Kubernetes Jobs, running as two independent instances
+> (prod + test) on CERIT-SC k8s. See [`README.md`](README.md) for the current operational
+> state and exact version, which moves faster than this line would stay accurate.
 > **Location**: VS Code Remote → MetaCentrum (brno2)
 > **Repo**: `WORK/2026-tobrman-polovodic/lambda-xtb/`
+
+This file is the project's running engineering journal: why things are built the way they
+are, the science behind the numbers, and the gotchas that cost real time to figure out. For
+"how do I run/deploy this," see [`README.md`](README.md); for the authoritative current
+architecture and API contract, see [`SERVICE_SPLIT.md`](SERVICE_SPLIT.md) — this file is the
+narrative, those are the reference.
 
 ---
 
@@ -126,17 +135,67 @@ Phase 3 [done]     Docker image → push to cerit.io
 Phase 4 [done]     Kubernetes Deployment + Service + Ingress on CERIT-SC
 Phase 5 [done]     SQLite multi-run storage + shareable /result/<uuid> URLs + stats page
 Phase 6 [done]     Parallel xtb execution — ThreadPoolExecutor + isolated calc_dir per call
-Phase 7 [TODO]     Async job queue — decouple HTTP request from calculation; email result link
+Phase 7 [done]     Service split — async job queue via per-calculation k8s Jobs (below)
+Phase 8 [done]     Two independent instances (prod + test) from one image, one manifest tree
+Phase 9 [BETA]     e-infra AAI single sign-on gating both instances
 ```
 
-### Synchronous execution — current limitation
+### The service split, and building it with agents
 
-The Flask route blocks for the full calculation (~30–90s). This means:
-- **One calculation at a time** — concurrent requests queue behind each other
-- **No progress feedback** — browser just waits
-- **Timeout risk** — slow molecules or a busy server may hit proxy timeouts
+#### The problem it solved
 
-The right fix is an async job queue (Celery + Redis, or a simple thread pool with a DB-polled status endpoint). Until then, the UI warns users not to resubmit, and results are always stored by UUID so reloading is safe.
+Through Phase 6, the Flask route ran the full ~60–120 s calculation **synchronously inside
+the HTTP request**, on a single 4-CPU pod that requested that CPU **24/7** even though it
+sat idle almost all day. Consequences:
+- **One calculation at a time** — concurrent requests queued behind each other.
+- **No progress feedback** — the browser just waited.
+- **Timeout risk** — slow molecules or a busy server could hit proxy timeouts.
+- **Wasted quota** — 4 CPU reserved permanently for a workload that runs a few minutes a day.
+
+#### The fix: two roles instead of one pod
+
+The service is now split into a **tiny always-on frontend** (UI + internal API + SQLite on
+a PVC, ~1 CPU) and a **compute worker that exists only as a Kubernetes Job, one per
+calculation, requesting 14 CPU**. The worker is fire-and-forget: no server, no listener,
+just `POST /start` → run `calculate_lambda()` → `POST /result` (or `/error`) → exit. The
+frontend tracks each calculation through `PENDING → PROCESSING → DONE/ERROR` in SQLite (the
+existing `JobStatus` enum, `db.py`), and separately consults the *Kubernetes* Job/Pod state
+to detect a worker that died silently (OOMKilled, evicted, node failure) without ever being
+able to report it. Full design, the exact API contract, and the state machine are in
+[`SERVICE_SPLIT.md`](SERVICE_SPLIT.md).
+
+Net effect: 14-CPU burst capacity exists only for the ~1–2 minutes a calculation actually
+runs; steady-state footprint dropped to roughly 250m CPU. The email column that had sat
+unused in the schema since Phase 5 (`db.py`) is now wired up as optional async notification.
+A later pass (Phase 8) turned "one instance" into **two independent instances from the same
+image** (prod + test), covered in [`README.md`](README.md#kubernetes-deployment-cerit-sc)
+and `SERVICE_SPLIT.md`'s "Instances" section — driven by the very practical constraint that
+the production instance had to stay untouched ahead of a conference presentation while the
+split itself was still being proven out on real hardware.
+
+#### Built as nine reviewable work packages, by AI coding agents
+
+The split was scoped as a design doc first ([`SERVICE_SPLIT.md`](SERVICE_SPLIT.md), written
+with Claude before any code changed) and then broken into **nine independent work packages**
+(WP1–WP9 in that doc, one GitHub issue each), each small enough that one coding agent could
+implement it end to end without touching the others. The rules those agents worked under are
+in [`AGENTS.md`](AGENTS.md): one agent per work package, mocked infrastructure only (no real
+cluster, no real network in tests), every acceptance-test checkbox in the issue backed by a
+passing test, work left on an **unpushed local branch** for a human to review — no agent
+merges, deploys, or touches the cluster itself. Each branch's tests were re-run at the tip of
+a shared integration branch before the next dependent package started (see the dependency
+graph in `SERVICE_SPLIT.md`).
+
+It did not eliminate manual testing. Docker builds and on-cluster behavior aren't things the
+sandbox those agents ran in could exercise at all (no Docker daemon, no `kubectl`), so real
+`docker build`/`docker run` and real `kubectl apply` runs against the cluster caught three
+production bugs the mocked unit tests structurally could not: a `data/` directory baked into
+the image with the wrong ownership for a non-root container; a missing dev-mode short-circuit
+that turned a normal local run into a raw `KeyError` on `POST /calculate`; and, once live,
+that a k8s Service selects pods by label, not by name — so the test instance's pods needed
+their own `app=` label or the two instances would have silently served each other's traffic
+against the wrong SQLite database. Each is a small, instructive lesson about the boundary
+between "the unit tests pass" and "it survives the wrong pod scheduling to the wrong node," and each was fixed as its own commit once found.
 
 ### Why Flask (not Jupyter/Voilà for the web service)
 
@@ -183,12 +242,20 @@ easyxtb temp files go to `/tmp` via `XDG_DATA_HOME=/tmp` (set in `Dockerfile.bas
 
 ### Request flow
 
+Since the [service split](#the-service-split-and-building-it-with-agents), `/calculate`
+returns immediately and the calculation happens in a separate Kubernetes Job; see
+[`SERVICE_SPLIT.md`](SERVICE_SPLIT.md) for the authoritative state machine and API
+contract. Browser-facing routes (`app.py`):
+
 ```
 POST /calculate
   └─ canonicalize SMILES (RDKit)
-  └─ always run calculate_lambda() — every submission is stored
-  └─ store_job() / store_error()
-  └─ redirect to /stats/<uuid>
+  └─ create_pending_job() — row status=PENDING
+  └─ create_compute_job() — spawns the 14-CPU k8s Job (no-op off-cluster, see README)
+  └─ redirect to /pending/<uuid>
+
+GET /pending/<uuid>
+  └─ renders a polling page that hits GET /api/jobs/<uuid>/status
 
 GET /stats/<uuid>
   └─ load all DONE/SEEN rows for same canonical SMILES
@@ -198,6 +265,9 @@ GET /stats/<uuid>
 GET /result/<uuid>
   └─ load row from DB → render result.html (energies, 3D viewer, XYZ download)
 ```
+
+The compute worker (`compute_runner.py`) never talks to the browser — it POSTs to
+`/api/jobs/<uuid>/{start,result,error}` and exits.
 
 ### Database schema (`jobs` table)
 
@@ -232,60 +302,16 @@ sqlite3 -csv -header lambda.db \
 
 ## Kubernetes deployment
 
-### Manifests (`k8s/`)
-
-`k8s/base/` + `k8s/overlays/{prod,test}`, applied with `kubectl apply -k` — two
-instances (prod and test) share one image and differ only by overlay. See
-SERVICE_SPLIT.md, "Instances".
-
-| File (`k8s/base/`) | Purpose |
-|------|---------|
-| `deployment.yaml` | 1 replica, PVC mount, env vars |
-| `service.yaml` | ClusterIP on port 80 → 5000 |
-| `ingress.yaml` | TLS via cert-manager, `lambda-xtb.dyn.cloud.e-infra.cz` |
-| `pvc.yaml` | 1Gi ReadWriteOnce for SQLite DB at `/app/data` |
-| `rbac.yaml` | SA + Role/RoleBinding letting the frontend manage compute Jobs |
-| `secret.yaml` | callback-token Secret — name only, value created out-of-band |
-
-Key env vars in the pod:
-
-| Var | Value | Why |
-|-----|-------|-----|
-| `OMP_NUM_THREADS` | `4` | CREST uses this; xtb overrides to 1 per thread in Python |
-| `XDG_DATA_HOME` | `/tmp` | easyxtb writes temp files here |
-| `DATABASE_URL` | `sqlite:///data/lambda.db` | Points to PVC mount |
-
-### CI/CD (`.github/workflows/`)
-
-| Workflow | Triggers | What it does |
-|----------|----------|--------------|
-| `docker-build.yml` | every push to `main` | builds app image from base, pushes `:latest` + `:<sha>`, pins deployment to `:<sha>` via `kubectl set image` |
-| `base-image.yml` | `environment.yml` or `Dockerfile.base` change, or manual dispatch | rebuilds and pushes `lambda-xtb-base:latest` |
-
-Rollout uses `kubectl set image ... :<sha>` (not `rollout restart`) to avoid the Harbor propagation race where `:latest` may not yet be available when k8s pulls.
-
-### Useful commands
-
-```bash
-# Logs
-kubectl logs -l app=lambda-xtb -n krupicka-ns --follow
-
-# Copy DB out for inspection
-kubectl cp krupicka-ns/<pod-name>:/app/data/lambda.db ./lambda.db
-
-# Manual rollout (if CI failed)
-kubectl rollout restart deployment/lambda-xtb -n krupicka-ns
-kubectl rollout status  deployment/lambda-xtb -n krupicka-ns
-```
-
-### Local testing
-
-```bash
-# Must build base first (once)
-docker build -f Dockerfile.base -t cerit.io/krupickm/lambda-xtb-base:latest .
-docker build -t lambda-xtb-local .
-docker run --rm -p 5000:5000 lambda-xtb-local
-```
+[`README.md`](README.md#kubernetes-deployment-cerit-sc) is the step-by-step operational
+reference (bringing an instance up, the required env vars, releasing, rolling back, drift
+traps); [`SERVICE_SPLIT.md`](SERVICE_SPLIT.md) is the architecture and manifest-layout
+reference. The short version: `k8s/base/` holds the six instance-independent manifests
+(Deployment, Service, Ingress, PVC, RBAC, callback Secret), `k8s/overlays/{prod,test}` apply
+via `kubectl apply -k` (kustomize, built into `kubectl`), and three GitHub Actions workflows
+(`ci.yml`, `docker-build.yml`, `base-image.yml`) build and — for a tag push or manual
+dispatch only — partially roll out the image; a manifest change always needs a manual
+`kubectl apply -k`. See README for why that split between "image rollout" and "manifest
+apply" exists and what breaks if you forget it.
 
 ---
 
@@ -294,23 +320,32 @@ docker run --rm -p 5000:5000 lambda-xtb-local
 ```
 lambda-xtb/
 ├── lambda_xtb.py              core science: geometry pipeline, calculate_lambda
-├── app.py                     Flask web service
-├── db.py                      SQLite database abstraction layer
+├── app.py                     Flask frontend: UI routes + internal /api/jobs/* callbacks
+├── compute_runner.py          worker entrypoint — no server; POST start/result/error, exit
+├── jobs.py                    builds & submits the compute Job spec; dead-worker reconcile
+├── db.py                      SQLite database abstraction layer (JobStatus state machine)
 ├── templates/
-│   ├── index.html             SMILES input form + method details
+│   ├── index.html             SMILES (+ optional email) input form + method details
+│   ├── pending.html           polling page while a Job runs
 │   ├── stats.html             all runs for a molecule: table + mean±std summary
 │   └── result.html            results display + 3D viewer (py3Dmol via CDN)
+├── tests/                     pytest — mocked infra; test_smoke_xtb.py is the one real run
 ├── environment.yml            conda env — the deployment artifact
 ├── Dockerfile                 app image: FROM base + COPY source (~20s build)
 ├── Dockerfile.base            base image: OS patches + conda env (~3min build)
 ├── k8s/
-│   ├── base/                  instance-independent manifests
+│   ├── base/                  instance-independent manifests (deployment, service,
+│   │                          ingress + oauth ingress/service, pvc, rbac, secret)
 │   └── overlays/
-│       ├── prod/              names identical to what is live
-│       └── test/              nameSuffix -test, own host/PVC/Job size
+│       ├── prod/               names identical to what is live — an apply adopts it
+│       └── test/               nameSuffix -test, own host/PVC/Job-size overrides
 ├── .github/workflows/
-│   ├── docker-build.yml       CI: app image on every push
-│   └── base-image.yml         CI: base image on env/Dockerfile.base change
+│   ├── ci.yml                 lint + mocked tests + one real xtb calc; gates every build
+│   ├── docker-build.yml       app image: tag → release+rollout; main → build only;
+│   │                          dispatch → build + roll out the test instance
+│   └── base-image.yml         base image on env/Dockerfile.base change or dispatch
+├── SERVICE_SPLIT.md           architecture + authoritative API contract & job states
+├── AGENTS.md                  rules coding agents implemented the split under
 └── DEVLOG.md                  this file
 ```
 
@@ -350,8 +385,18 @@ If your numbers violate this trend, something is wrong.
 
 ## Open questions / next steps
 
-- [ ] **Async job queue** *(biggest open item)* — decouple the HTTP request from the ~30–90s calculation. Options: Celery + Redis sidecar; or a simple in-process thread pool with DB-polled `/status/<uuid>` endpoint. Goal: browser returns immediately with a "pending" page, user gets a shareable link by email when done. The `email` column in the DB is already reserved for this.
+- [ ] **Verify e-infra SSO on the live cluster** *(most urgent — see README)* — the ingress
+  gating was merged intending to admit any authenticated e-infra identity, but that
+  specific behavior was never confirmed against the real oauth2-proxy, and the release
+  that would ship it (`v1.3`) was never tagged. Confirm both before relying on it for an
+  outside audience.
+- [ ] **Prod's rolling-update deadlock risk** — 1 replica + a ReadWriteOnce PVC + the
+  default `RollingUpdate` strategy can hang if the new pod schedules onto a different node
+  than the old one (the new pod waits for a volume the old one still holds). The test
+  overlay already patches in `strategy: Recreate`; prod hasn't been given the same fix yet.
 - [ ] **CREST `--squick` validation** — compare λ results for naphthalene/anthracene/TPD across 3+ runs; confirm reproducibility vs `--mquick`
+- [ ] **CVE table refresh** — the table below is a point-in-time snapshot from 2026-03-14; re-check before treating it as current.
 - [ ] **`mambaorg/micromamba` base image** — evaluate for smaller CVE surface
 - [ ] Test `environment.yml` reproducibility on MetaCentrum JupyterHub
-- [ ] Decide: public URL or MetaCentrum-login-required?
+- [ ] **SQLite → Postgres** — `db.py`'s `Database` ABC already anticipates this; only needed if the frontend ever goes multi-replica.
+- [ ] **True scale-to-zero** — CERIT-SC has no Knative/KEDA today, which is why the frontend is "minimal always-on" rather than actually zero; revisit if idle cost ever matters.

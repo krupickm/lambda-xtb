@@ -1,5 +1,13 @@
 # Split λ-xTB into Frontend + Per-Request Compute Jobs
 
+> **Status: implemented.** This started as a design doc and is now also the authoritative
+> reference for the architecture, the API contract, and the job state machine — those
+> sections describe what the code actually does, not a proposal. The "Implementation Work
+> Packages" section further down is a historical record of how the build was scoped into
+> nine independently-implemented, agent-built work packages (see
+> [`DEVLOG.md`](DEVLOG.md#the-service-split-and-building-it-with-agents) for the story);
+> all nine are done. For day-to-day operation, see [`README.md`](README.md) instead.
+
 ## Context
 
 Today λ-xTB is a **single monolithic Flask pod** on CERIT-SC Kubernetes that requests
