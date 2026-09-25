@@ -6,20 +6,28 @@ metadata:
     kubernetes.io/tls-acme: "true"
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
     # e-infra SSO (BETA, see docs.cerit.io/en/docs/kubernetes/security): requires
-    # a valid e-infra AAI login before nginx proxies the request. CERIT's docs
-    # example (allowed_emails=user@domain) cannot pass this cluster's
-    # ingress-nginx annotation-validation admission webhook: auth-url is
-    # checked against a character allowlist (see
-    # internal/ingress/annotations/parser/validators.go,
-    # URLWithNginxVariableRegex, in kubernetes/ingress-nginx) that excludes
-    # "@" entirely, so no bare email address can appear here. oauth2-proxy's
-    # own auth-only handler (oauthproxy.go) supports allowed_email_domains as
-    # an equivalent, @-free alternative — allowed_groups / allowed_email_domains
-    # / allowed_emails are three independent, ANDed constraints, each a no-op
-    # when its own query param is absent. Add more comma-separated academic
-    # domains here as collaborators need access.
+    # a valid e-infra AAI login before nginx proxies the request. Both auth-url
+    # and auth-signin are checked against the same character allowlist
+    # (URLWithNginxVariableRegex, kubernetes/ingress-nginx
+    # internal/ingress/annotations/parser/validators.go) that excludes "@" and
+    # "%" entirely:
+    #  - auth-url: CERIT's docs example (allowed_emails=user@domain) cannot
+    #    pass it, so use oauth2-proxy's allowed_email_domains instead
+    #    (oauthproxy.go) — allowed_groups / allowed_email_domains /
+    #    allowed_emails are three independent, ANDed, opt-in constraints. Add
+    #    more comma-separated academic domains as collaborators need access.
+    #  - auth-signin: CERIT's docs example hand-encodes the redirect target as
+    #    "...?rd=$scheme%3A%2F%2F$host...", which also fails the regex — this
+    #    isn't caught at apply time (this annotation isn't covered by the
+    #    admission webhook here), but the controller's own reconcile-time
+    #    parser rejects it the same way, silently disabling the redirect (nginx
+    #    then serves its own bare 401 instead of bouncing to login). Omitting
+    #    the query string entirely avoids the problem: ingress-nginx's
+    #    buildAuthSignURL() appends "?rd=<escaped-uri>" itself at config-render
+    #    time using nginx variables, never touching the annotation string.
     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth?allowed_email_domains=vscht.cz"
-    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$scheme%3A%2F%2F$host$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start"
+    nginx.ingress.kubernetes.io/auth-signin-redirect-param: "rd"
 spec:
   ingressClassName: nginx
   tls:
